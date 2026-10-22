@@ -146,9 +146,11 @@ if __name__ == "__main__":
 
     # راه‌اندازی Webhook برای Render
     if WEBHOOK_URL:
+        print(f"Starting webhook on port {PORT}...")
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
+            url_path=TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
         )
     else:
