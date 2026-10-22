@@ -14,6 +14,9 @@ import sqlite3
 import os
 
 TOKEN = os.environ.get("TOKEN", "8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc")
+PORT = int(os.environ.get("PORT", "8443"))
+# آدرس اپلیکیشن شما در رندر (بعد از ساخت Web Service در رندر، این URL رو اینجا میگذارید یا از متغیر محیطی میخوانید)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") 
 
 ADMIN_ID = 93543054  # آیدی تلگرام ادمین (خودت)
 
@@ -48,27 +51,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # پاک کردن حافظه موقت کاربر
     context.user_data.clear()
-    
-    # اجرای دوباره تابع استارت برای شروع از اول
     await start(update, context)
     return ConversationHandler.END
 
-# شروع فرآیند ثبت‌نام
 async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please enter your name:")
     return NAME
 
-# دریافت نام و پرسیدن سن
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.message.text
     context.user_data["name"] = user_name
     await update.message.reply_text(f"Nice to meet you {user_name}! How old are you?")
     return AGE
 
-# دریافت سن، اعتبارسنجی و ذخیره در دیتابیس
 async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_age = update.message.text
     
@@ -89,7 +87,6 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# نمایش لیست کاربران (فقط برای ادمین)
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -113,12 +110,10 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-# هندلر مدیریت دکمه‌های متنی ثابت پایین صفحه و متن‌های متفرقه
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "📝 ثبت‌نام":
-        # وقتی روی دکمه ثبت‌نام می‌زند، خودکار دستور /register رو براش اجرا می‌کنیم یا پیام میدیم
         await update.message.reply_text("برای شروع ثبت‌نام، لطفاً دستور /register را ارسال کنید.")
     elif text == "⏰ ساعت فعلی":
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -147,9 +142,16 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("users", show_users))
     app.add_handler(CommandHandler("restart", restart))
-
-    # هندلر پیام‌های متنی برای مدیریت دکمه‌های ثابت پایین صفحه
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
-    print("Bot is running...")
-    app.run_polling()
+    # راه‌اندازی Webhook برای Render
+    if WEBHOOK_URL:
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+        )
+    else:
+        # اگر لوکال تست کردید با روش پولینگ اجرا شود
+        print("Bot is running with polling (Local)...")
+        app.run_polling()
