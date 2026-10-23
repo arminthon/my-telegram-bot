@@ -1,6 +1,9 @@
-﻿python-telegram-bot[webhooks]
+﻿python-dotenv
+telegram
+psycopg2-binary
 pandas
 openpyxl
-python-dotenv
-psycopg2-binary
 groq
+matplotlib
+seaborn
+duckduckgo-search

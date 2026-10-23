@@ -4,6 +4,7 @@ import random
 import pandas as pd
 from dotenv import load_dotenv
 from groq import Groq
+from duckduckgo_search import DDGS
 
 # لود کردن متغیرهای محیطی
 load_dotenv()
@@ -40,6 +41,17 @@ def chunk_text(text: str, chunk_size: int = 3500):
     if not text:
         return []
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+# تابع سرچ زنده در وب
+def web_search(query: str, max_results: int = 3) -> str:
+    try:
+        with DDGS() as ddgs:
+            results = [r['body'] for r in ddgs.text(query, max_results=max_results)]
+            if results:
+                return "\n".join(results)
+    except Exception as e:
+        print(f"Web search error: {e}")
+    return ""
 
 # اتصال چندمنظوره به دیتابیس (پستگرس در رندر / اس‌کیولایت لوکال)
 def get_db_connection():
@@ -136,12 +148,14 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# --- فرآیند هوش مصنوعی (پیوسته و بدون قطعی) ---
+# --- فرآیند هوش مصنوعی (پیوسته با قابلیت وب‌سرچ زنده) ---
 async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # فعال کردن حالت هوش مصنوعی
     context.user_data["in_ai_mode"] = True
     context.user_data["ai_history"] = [
-        {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
+        {
+            "role": "system",
+            "content": "You are a friendly, helpful, and smart AI assistant with real-time web search access. Answer in the same language the user uses."
+        }
     ]
     
     exit_keyboard = ReplyKeyboardMarkup(
@@ -151,7 +165,7 @@ async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "🧠 وارد بخش گفتگوی هوش مصنوعی شدید!\n\n"
-        "هر سوالی دارید بنویسید؛ من در این حالت باقی می‌مانم و پیام‌های قبلی شما را هم به یاد دارم.\n\n"
+        "من به اطلاعات زنده وب متصل هستم. هر سوالی دارید بنویسید (اخبار روز، وقایع، تحلیل و...).\n\n"
         "هر زمان کارتان تمام شد دکمه «❌ پایان گفتگو با هوش مصنوعی» را بزنید.",
         reply_markup=exit_keyboard
     )
@@ -161,13 +175,27 @@ async def ask_groq_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, user_q
         await update.message.reply_text("⚠️ سرویس هوش مصنوعی در دسترس نیست.")
         return
 
-    status_msg = await update.message.reply_text("⏳ در حال فکر کردن...")
+    status_msg = await update.message.reply_text("🔍 در حال جستجو در اینترنت و بررسی...")
 
-    # تاریخچه پیام‌ها
+    # سرچ در وب
+    search_info = web_search(user_question, max_results=3)
+
+    # قالب‌بندی پیام برای مدل هوش مصنوعی
+    if search_info:
+        model_input = (
+            f"نتایج زنده جستجو از وب:\n{search_info}\n\n"
+            f"با توجه به اطلاعات جدید بالا، به سوال زیر پاسخ کامل بده:\n{user_question}"
+        )
+    else:
+        model_input = user_question
+
     history = context.user_data.get("ai_history", [
-        {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
+        {
+            "role": "system",
+            "content": "You are a friendly, helpful, and smart AI assistant with real-time web search access. Answer in the same language the user uses."
+        }
     ])
-    history.append({"role": "user", "content": user_question})
+    history.append({"role": "user", "content": model_input})
 
     try:
         completion = groq_client.chat.completions.create(
@@ -178,13 +206,13 @@ async def ask_groq_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, user_q
         )
         ai_reply = completion.choices[0].message.content or "پاسخی دریافت نشد."
         
-        # ذخیره در سابقه
+        # ذخیره در تاریخچه
         history.append({"role": "assistant", "content": ai_reply})
         if len(history) > 11:
             history = [history[0]] + history[-10:]
         context.user_data["ai_history"] = history
 
-        # ارسال تکه‌تکه بدون باگ سقف تلگرام
+        # ارسال پیام‌ها
         parts = chunk_text(ai_reply, 3500)
         if parts:
             await status_msg.edit_text(parts[0])
@@ -261,7 +289,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    # اگر کاربر در حالت هوش مصنوعی بود، هرچیزی فرستاد بده به Groq
+    # اگر کاربر در حالت هوش مصنوعی بود
     if context.user_data.get("in_ai_mode", False):
         await ask_groq_ai(update, context, text)
         return
@@ -284,7 +312,7 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # هندلر ثبت‌نام (فقط برای ثبت‌نام)
+    # هندلر ثبت‌نام
     reg_handler = ConversationHandler(
         entry_points=[
             CommandHandler("register", start_register),
