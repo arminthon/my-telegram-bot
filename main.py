@@ -163,7 +163,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     init_db()
-    
+    print("CWD:", os.getcwd())
+    print("DB exists:", os.path.exists("bot_users.db"))
+
     app = ApplicationBuilder().token(TOKEN).build()
     
     conv_handler = ConversationHandler(
