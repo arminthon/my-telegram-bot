@@ -1,3 +1,9 @@
+import os
+from dotenv import load_dotenv
+
+# این خط باعث میشه پایتون بره محتویات فایل .env رو بخونه
+load_dotenv()
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
