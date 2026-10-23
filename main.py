@@ -145,7 +145,7 @@ async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         completion = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."},
                 {"role": "user", "content": user_question}
