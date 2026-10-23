@@ -88,37 +88,39 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    print(f"User {user_id} tried to export users. ADMIN_ID is {ADMIN_ID}")
+    
     # بررسی اینکه آیا کاربر همان ادمین اصلی است یا نه
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("شما اجازه دسترسی به این دستور را ندارید.")
+    if user_id != ADMIN_ID:
+        await update.message.reply_text(f"شما اجازه دسترسی ندارید. آیدی شما: {user_id}")
         return
 
     try:
-        # خواندن جدول کاربران از دیتابیس با استفاده از پانداس
         conn = sqlite3.connect("bot_users.db")
         df = pd.read_sql_query("SELECT * FROM users", conn)
         conn.close()
 
-        # بررسی اینکه آیا دیتابیس خالی است یا نه
         if df.empty:
             await update.message.reply_text("دیتابیس کاربران خالی است!")
             return
 
-        # ذخیره اطلاعات در قالب یک فایل اکسل
         file_path = "bot_users.xlsx"
         df.to_excel(file_path, index=False)
 
-        # ارسال فایل اکسل برای ادمین در تلگرام
         with open(file_path, "rb") as excel_file:
             await context.bot.send_document(
-                chat_id=update.effective_user.id,
+                chat_id=user_id,
                 document=excel_file,
                 filename="bot_users.xlsx",
                 caption="📊 خروجی اکسل از لیست کاربران ربات:"
             )
+        print("Excel file sent successfully!")
 
     except Exception as e:
+        print(f"Error in export: {e}")
         await update.message.reply_text(f"خطا در ایجاد فایل اکسل: {e}")
+
 
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
