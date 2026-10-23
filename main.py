@@ -188,8 +188,7 @@ if __name__ == "__main__":
             url_path="8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc",
             webhook_url=f"{WEBHOOK_URL}/{8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc}"
         )
- )
-    else:
+else:
         # اگر لوکال تست کردید با روش پولینگ اجرا شود
-        print("Bot is running with polling (Local)...")
-        app.run_polling()
+    print("Bot is running with polling (Local)...")
+    app.run_polling()
