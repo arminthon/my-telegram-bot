@@ -32,11 +32,10 @@ PORT = int(os.environ.get("PORT", "8443"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") 
 ADMIN_ID = 93543054  # آیدی تلگرام ادمین
 
-# حالت‌های مختلف مکالمه
+# حالت‌های مختلف مکالمه ثبت‌نام
 NAME, AGE = range(2)
-ASK_AI = 2
 
-# تکه‌تکه کردن متن‌های طولانی برای عبور از محدودیت ۴۰۹۶ کاراکتر تلگرام
+# تکه‌تکه کردن متن‌های طولانی برای عبور از سقف کاراکتر تلگرام
 def chunk_text(text: str, chunk_size: int = 3500):
     if not text:
         return []
@@ -79,6 +78,7 @@ def init_db():
 
 # منوی اصلی
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["in_ai_mode"] = False
     keyboard = [
         [KeyboardButton("🤖 پرسش از هوش مصنوعی")],
         [KeyboardButton("📝 ثبت‌نام"), KeyboardButton("⏰ ساعت فعلی")],
@@ -104,6 +104,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- فرآیند ثبت‌نام ---
 async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["in_ai_mode"] = False
     await update.message.reply_text("لطفاً نام خود را وارد کنید:")
     return NAME
 
@@ -135,8 +136,10 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# --- فرآیند هوش مصنوعی با حافظه و مکالمه پیوسته ---
+# --- فرآیند هوش مصنوعی (پیوسته و بدون قطعی) ---
 async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # فعال کردن حالت هوش مصنوعی
+    context.user_data["in_ai_mode"] = True
     context.user_data["ai_history"] = [
         {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
     ]
@@ -148,30 +151,19 @@ async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "🧠 وارد بخش گفتگوی هوش مصنوعی شدید!\n\n"
-        "هر سوالی دارید بنویسید؛ گفتگو پیوسته است و ربات پیام‌های قبلی شما را به یاد دارد.\n"
-        "هر زمان کارتان تمام شد، دکمه «❌ پایان گفتگو با هوش مصنوعی» را بزنید.",
+        "هر سوالی دارید بنویسید؛ من در این حالت باقی می‌مانم و پیام‌های قبلی شما را هم به یاد دارم.\n\n"
+        "هر زمان کارتان تمام شد دکمه «❌ پایان گفتگو با هوش مصنوعی» را بزنید.",
         reply_markup=exit_keyboard
     )
-    return ASK_AI
 
-async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_question = update.message.text
-    
-    # خروج از حالت گفتگو
-    if user_question == "❌ پایان گفتگو با هوش مصنوعی":
-        context.user_data.pop("ai_history", None)
-        await update.message.reply_text("👋 گفتگو با هوش مصنوعی پایان یافت.")
-        await start(update, context)
-        return ConversationHandler.END
-
+async def ask_groq_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, user_question: str):
     if not groq_client:
         await update.message.reply_text("⚠️ سرویس هوش مصنوعی در دسترس نیست.")
-        await start(update, context)
-        return ConversationHandler.END
+        return
 
-    status_msg = await update.message.reply_text("⏳ در حال پردازش...")
+    status_msg = await update.message.reply_text("⏳ در حال فکر کردن...")
 
-    # بازیابی تاریخچه مکالمه
+    # تاریخچه پیام‌ها
     history = context.user_data.get("ai_history", [
         {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
     ])
@@ -186,27 +178,23 @@ async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         ai_reply = completion.choices[0].message.content or "پاسخی دریافت نشد."
         
-        # ذخیره پاسخ بات در تاریخچه سشن
+        # ذخیره در سابقه
         history.append({"role": "assistant", "content": ai_reply})
-        
-        # مدیریت حجم حافظه (نگه‌داشتن ۱۰ تعامل آخر)
         if len(history) > 11:
             history = [history[0]] + history[-10:]
         context.user_data["ai_history"] = history
 
-        # تقسیم خروجی به تکه‌های امن برای تلگرام
+        # ارسال تکه‌تکه بدون باگ سقف تلگرام
         parts = chunk_text(ai_reply, 3500)
         if parts:
             await status_msg.edit_text(parts[0])
             for part in parts[1:]:
                 await update.message.reply_text(part)
         else:
-            await status_msg.edit_text("پاسخ خالی بود.")
+            await status_msg.edit_text("پاسخی داده نشد.")
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ خطا در پردازش هوش مصنوعی: {e}")
-
-    return ASK_AI
+        await status_msg.edit_text(f"❌ خطا در هوش مصنوعی: {e}")
 
 # --- گزارش‌گیری ادمین ---
 async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,16 +249,34 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
+# --- مدیریت کلیه پیام‌های متنی ---
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+
+    # بررسی خروج از هوش مصنوعی
+    if text == "❌ پایان گفتگو با هوش مصنوعی":
+        context.user_data["in_ai_mode"] = False
+        context.user_data.pop("ai_history", None)
+        await update.message.reply_text("👋 گفتگو با هوش مصنوعی پایان یافت.")
+        await start(update, context)
+        return
+
+    # اگر کاربر در حالت هوش مصنوعی بود، هرچیزی فرستاد بده به Groq
+    if context.user_data.get("in_ai_mode", False):
+        await ask_groq_ai(update, context, text)
+        return
+
+    # پیام‌های منوی عادی
     if text == "⏰ ساعت فعلی":
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         await update.message.reply_text(f"ساعت فعلی: {current_time}")
     elif text == "🎲 عدد شانس":
         lucky_num = random.randint(1, 100)
         await update.message.reply_text(f"عدد شانس شما: {lucky_num}")
+    elif text == "🤖 پرسش از هوش مصنوعی":
+        await start_ai_prompt(update, context)
     else:
-        await update.message.reply_text(text)
+        await update.message.reply_text("متوجه نشدم! لطفاً از دکمه‌های منو استفاده کنید یا روی «🤖 پرسش از هوش مصنوعی» بزنید.")
 
 if __name__ == "__main__":
     init_db()
@@ -278,7 +284,7 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # هندلر ثبت‌نام
+    # هندلر ثبت‌نام (فقط برای ثبت‌نام)
     reg_handler = ConversationHandler(
         entry_points=[
             CommandHandler("register", start_register),
@@ -291,24 +297,14 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
     )
 
-    # هندلر هوش مصنوعی
-    ai_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("ai", start_ai_prompt),
-            MessageHandler(filters.Regex("^🤖 پرسش از هوش مصنوعی$"), start_ai_prompt),
-        ],
-        states={
-            ASK_AI: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_response)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
-    )
-
     app.add_handler(reg_handler)
-    app.add_handler(ai_handler)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ai", start_ai_prompt))
     app.add_handler(CommandHandler("users", show_users))
     app.add_handler(CommandHandler("export", export_users))
     app.add_handler(CommandHandler("restart", restart))
+    
+    # کنترل‌کننده تمام متون و دکمه‌های بات
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
     if WEBHOOK_URL:
