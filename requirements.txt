@@ -1,4 +1,6 @@
 python-telegram-bot[webhooks]
+pandas
+openpyxl
 
 
 
