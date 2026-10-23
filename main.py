@@ -46,7 +46,19 @@ NAME, AGE = range(2)
 def chunk_text(text: str, chunk_size: int = 3500):
     if not text:
         return []
-    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+    return [text[i: i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def _ddg_text_search(query: str, max_results: int = 6) -> list[dict]:
+    with DDGS() as ddgs:
+        return list(
+            ddgs.text(
+                query,
+                max_results=max_results,
+                region="wt-wt",   # نتایج جهانی
+                backend="html",   # معمولاً خروجی پایدارتر
+            )
+        )
 
 
 # جستجو در وب و آماده‌کردن خلاصه نتایج
@@ -56,15 +68,11 @@ def web_search(query: str, max_results: int = 6) -> str:
     نکته: DDGS فقط snippet برمی‌گرداند و صفحه را کامل fetch نمی‌کند.
     """
     try:
-        with DDGS() as ddgs:
-            raw_results = list(
-                ddgs.text(
-                    query,
-                    max_results=max_results,
-                    region="wt-wt",      # نتایج جهانی
-                    backend="html",      # معمولاً برای خروجی پایدارتر
-                )
-            )
+        raw_results = _ddg_text_search(query, max_results=max_results)
+
+        # اگر فارسی/محلی کم آورد، یک بار هم با کوئری انگلیسی تلاش می‌کنیم
+        if not raw_results:
+            raw_results = _ddg_text_search(f"{query} official source", max_results=max_results)
 
         if not raw_results:
             return ""
@@ -72,15 +80,9 @@ def web_search(query: str, max_results: int = 6) -> str:
         results = []
         for result in raw_results:
             title = (result.get("title") or "").strip()
-            body = (
-                result.get("body")
-                or result.get("snippet")
-                or result.get("description")
-                or ""
-            ).strip()
+            body = (result.get("body") or result.get("snippet") or result.get("description") or "").strip()
             link = (result.get("href") or result.get("url") or "").strip()
 
-            # حتی اگر body خالی بود، title/link را نگه می‌داریم
             parts = []
             if title:
                 parts.append(f"عنوان: {title}")
@@ -224,18 +226,18 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- پرامپت سیستم هوش مصنوعی ---
 AI_SYSTEM_PROMPT = (
-    "شما یک دستیار هوشمند هستید.\n"
+    "شما یک دستیار بسیار دقیق و فارسی‌زبان هستید.\n"
     "قوانین مهم:\n"
     "1) فقط پاسخ متنی تولید کن.\n"
     "2) هیچ ابزار، تابع یا اکشنی را فراخوانی نکن.\n"
-    "3) اگر در پیام کاربر بخشی با عنوان «نتایج جستجو از وب» وجود داشت، "
-    "اولویت با همان بخش است.\n"
-    "4) اگر نتایج وب شامل لینک بودند، در صورت مرتبط بودن، لینک یا عنوان منبع را در پاسخ بیاور.\n"
-    "5) اگر سؤال درباره اطلاعات لحظه‌ای/جدید (مثل قیمت امروز، نرخ ارز امروز، خبر فوری) بود و "
-    "نتایج وب شواهد کافی نداشتند، صادقانه بگو نمی‌توانی آن را قطعی تأیید کنی و عدد/خبر نساز.\n"
-    "6) اگر سؤال دانش عمومی بود (مثل اسکار، تاریخ، مفاهیم علمی) و نتایج وب ناکافی بودند، "
-    "می‌توانی از دانش عمومی خودت پاسخ بده؛ اما اگر مطمئن نیستی، میزان اطمینان را بیان کن.\n"
+    "3) اگر در پیام ورودی بخشی با عنوان «نتایج جستجو از وب» وجود داشت، اولویت با همان بخش است.\n"
+    "4) اگر نتایج وب شامل لینک/منبع بودند و مرتبط‌اند، در پاسخ به آن‌ها اشاره کن.\n"
+    "5) اگر سؤال درباره اطلاعات لحظه‌ای/جدید (مثل قیمت امروز، نرخ ارز امروز، خبر فوری) بود و نتایج وب شواهد کافی نداشتند، "
+    "صادقانه بگو نمی‌توانی آن را قطعی تأیید کنی و عدد/خبر نساز.\n"
+    "6) اگر سؤال دانش عمومی/تاریخی بود (مثل اسکار، تاریخ، مفاهیم علمی، برنامه‌نویسی) و نتایج وب ناکافی بودند، "
+    "از دانش عمومی خودت پاسخ بده؛ ولی اگر مطمئن نیستی، میزان اطمینان را شفاف بیان کن.\n"
     "7) پاسخ را به همان زبانی بده که کاربر استفاده کرده است.\n"
+    "8) از حدس‌های مشخص (اسم/عدد دقیق) بدون پشتوانه پرهیز کن.\n"
 )
 
 
@@ -285,7 +287,7 @@ async def ask_groq_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, user_q
             model_input = (
                 "جستجوی وب انجام شد، اما نتیجه قابل استفاده‌ای برنگشت.\n"
                 "اگر پرسش به اطلاعات لحظه‌ای یا جدید نیاز دارد، این محدودیت را صریح بگو و حدس نزن.\n"
-                "اگر پرسش دانش عمومی است، می‌توانی از دانش عمومی خودت کمک بگیری.\n\n"
+                "اگر پرسش دانش عمومی/تاریخی است، از دانش عمومی خودت پاسخ بده (بدون ساختن اطلاعات).\n\n"
                 f"پرسش کاربر:\n{user_question}"
             )
 
@@ -302,7 +304,7 @@ async def ask_groq_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, user_q
             lambda: groq_client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=history,
-                temperature=0.6,
+                temperature=0.2,   # کمتر = توهم کمتر / دقت بیشتر
                 max_tokens=4096,
             )
         )
