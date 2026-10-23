@@ -36,6 +36,12 @@ ADMIN_ID = 93543054  # آیدی تلگرام ادمین
 NAME, AGE = range(2)
 ASK_AI = 2
 
+# تکه‌تکه کردن متن‌های طولانی برای عبور از محدودیت ۴۰۹۶ کاراکتر تلگرام
+def chunk_text(text: str, chunk_size: int = 3500):
+    if not text:
+        return []
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
 # اتصال چندمنظوره به دیتابیس (پستگرس در رندر / اس‌کیولایت لوکال)
 def get_db_connection():
     if DATABASE_URL:
@@ -131,7 +137,6 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- فرآیند هوش مصنوعی با حافظه و مکالمه پیوسته ---
 async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # مقداردهی اولیه حافظه گفتگو برای سشن جدید
     context.user_data["ai_history"] = [
         {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
     ]
@@ -166,7 +171,7 @@ async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     status_msg = await update.message.reply_text("⏳ در حال پردازش...")
 
-    # تاریخچه مکالمه
+    # بازیابی تاریخچه مکالمه
     history = context.user_data.get("ai_history", [
         {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
     ])
@@ -177,24 +182,30 @@ async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE)
             model="openai/gpt-oss-20b",
             messages=history,
             temperature=0.7,
-            max_tokens=1024,
+            max_tokens=4096,
         )
-        ai_reply = completion.choices[0].message.content
+        ai_reply = completion.choices[0].message.content or "پاسخی دریافت نشد."
         
-        # ذخیره پاسخ بات در تاریخچه
+        # ذخیره پاسخ بات در تاریخچه سشن
         history.append({"role": "assistant", "content": ai_reply})
         
-        # نگه داشتن نهایتاً ۱۰ پیام اخیر برای بهینه‌ماندن مصرف توکن
+        # مدیریت حجم حافظه (نگه‌داشتن ۱۰ تعامل آخر)
         if len(history) > 11:
             history = [history[0]] + history[-10:]
         context.user_data["ai_history"] = history
 
-        await status_msg.edit_text(ai_reply)
+        # تقسیم خروجی به تکه‌های امن برای تلگرام
+        parts = chunk_text(ai_reply, 3500)
+        if parts:
+            await status_msg.edit_text(parts[0])
+            for part in parts[1:]:
+                await update.message.reply_text(part)
+        else:
+            await status_msg.edit_text("پاسخ خالی بود.")
 
     except Exception as e:
         await status_msg.edit_text(f"❌ خطا در پردازش هوش مصنوعی: {e}")
 
-    # برگرداندن ASK_AI برای ادامه داشتن چت
     return ASK_AI
 
 # --- گزارش‌گیری ادمین ---
