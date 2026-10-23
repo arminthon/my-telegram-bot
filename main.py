@@ -32,10 +32,7 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # نام مدل را می‌توان در Environment Variables رندر هم تنظیم کرد.
-GROQ_MODEL = (
-    os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
-    or "openai/gpt-oss-120b"
-)
+GROQ_MODEL = (os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip() or "openai/gpt-oss-120b")
 
 PORT = int(os.environ.get("PORT", "8443"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
@@ -49,22 +46,30 @@ NAME, AGE = range(2)
 def chunk_text(text: str, chunk_size: int = 3500):
     if not text:
         return []
-    return [
-        text[i:i + chunk_size]
-        for i in range(0, len(text), chunk_size)
-    ]
+    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
 # جستجو در وب و آماده‌کردن خلاصه نتایج
-def web_search(query: str, max_results: int = 3) -> str:
+def web_search(query: str, max_results: int = 6) -> str:
+    """
+    جستجوی وب با خروجی پایدارتر برای فارسی.
+    نکته: DDGS فقط snippet برمی‌گرداند و صفحه را کامل fetch نمی‌کند.
+    """
     try:
         with DDGS() as ddgs:
             raw_results = list(
-                ddgs.text(query, max_results=max_results)
+                ddgs.text(
+                    query,
+                    max_results=max_results,
+                    region="wt-wt",      # نتایج جهانی
+                    backend="html",      # معمولاً برای خروجی پایدارتر
+                )
             )
 
-        results = []
+        if not raw_results:
+            return ""
 
+        results = []
         for result in raw_results:
             title = (result.get("title") or "").strip()
             body = (
@@ -73,12 +78,9 @@ def web_search(query: str, max_results: int = 3) -> str:
                 or result.get("description")
                 or ""
             ).strip()
-            link = (
-                result.get("href")
-                or result.get("url")
-                or ""
-            ).strip()
+            link = (result.get("href") or result.get("url") or "").strip()
 
+            # حتی اگر body خالی بود، title/link را نگه می‌داریم
             parts = []
             if title:
                 parts.append(f"عنوان: {title}")
@@ -90,7 +92,7 @@ def web_search(query: str, max_results: int = 3) -> str:
             if parts:
                 results.append("\n".join(parts))
 
-        return "\n\n---\n\n".join(results)
+        return "\n\n---\n\n".join(results).strip()
 
     except Exception as e:
         print(f"Web search error: {e}")
@@ -114,23 +116,27 @@ def init_db():
     cursor = conn.cursor()
 
     if DATABASE_URL:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 name TEXT,
                 age TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+            """
+        )
     else:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 age TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
+            """
+        )
 
     conn.commit()
     cursor.close()
@@ -147,10 +153,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [KeyboardButton("🎲 عدد شانس")],
     ]
 
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True,
-    )
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     welcome_text = (
         "سلام! به ربات من خوش آمدید.\n\n"
@@ -158,10 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "«🤖 پرسش از هوش مصنوعی» بزنید."
     )
 
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=reply_markup,
-    )
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,10 +178,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- فرآیند ثبت‌نام ---
-async def start_register(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["in_ai_mode"] = False
     await update.message.reply_text("لطفاً نام خود را وارد کنید:")
     return NAME
@@ -191,9 +188,7 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.message.text
     context.user_data["name"] = user_name
 
-    await update.message.reply_text(
-        f"از آشنایی با شما خوشحالم {user_name}! چند سال دارید؟"
-    )
+    await update.message.reply_text(f"از آشنایی با شما خوشحالم {user_name}! چند سال دارید؟")
     return AGE
 
 
@@ -201,9 +196,7 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_age = update.message.text
 
     if not user_age.isdigit():
-        await update.message.reply_text(
-            "❌ لطفاً فقط عدد وارد کنید (مثلاً 25):"
-        )
+        await update.message.reply_text("❌ لطفاً فقط عدد وارد کنید (مثلاً 25):")
         return AGE
 
     user_name = context.user_data.get("name")
@@ -236,30 +229,19 @@ AI_SYSTEM_PROMPT = (
     "1) فقط پاسخ متنی تولید کن.\n"
     "2) هیچ ابزار، تابع یا اکشنی را فراخوانی نکن.\n"
     "3) اگر در پیام کاربر بخشی با عنوان «نتایج جستجو از وب» وجود داشت، "
-    "برای پاسخ به اطلاعات همان بخش توجه کن.\n"
-    "4) اگر نتایج وب شامل لینک بودند، در صورت مرتبط بودن، لینک یا عنوان "
-    "منبع را در پاسخ بیاور.\n"
-    "5) اگر جستجو نتیجه قابل استفاده‌ای نداشت و سؤال درباره اطلاعات "
-    "لحظه‌ای یا جدید بود، صادقانه بگو نتوانستی آن را از نتایج جستجو "
-    "تأیید کنی؛ عدد، خبر یا منبع نساز.\n"
-    "6) پاسخ را به همان زبانی بده که کاربر استفاده کرده است.\n"
-)
-
-# مدل پیش‌فرض؛ مقدار GROQ_MODEL در تنظیمات Render می‌تواند آن را تغییر دهد.
-GROQ_MODEL = (
-    os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
-    or "openai/gpt-oss-120b"
+    "اولویت با همان بخش است.\n"
+    "4) اگر نتایج وب شامل لینک بودند، در صورت مرتبط بودن، لینک یا عنوان منبع را در پاسخ بیاور.\n"
+    "5) اگر سؤال درباره اطلاعات لحظه‌ای/جدید (مثل قیمت امروز، نرخ ارز امروز، خبر فوری) بود و "
+    "نتایج وب شواهد کافی نداشتند، صادقانه بگو نمی‌توانی آن را قطعی تأیید کنی و عدد/خبر نساز.\n"
+    "6) اگر سؤال دانش عمومی بود (مثل اسکار، تاریخ، مفاهیم علمی) و نتایج وب ناکافی بودند، "
+    "می‌توانی از دانش عمومی خودت پاسخ بده؛ اما اگر مطمئن نیستی، میزان اطمینان را بیان کن.\n"
+    "7) پاسخ را به همان زبانی بده که کاربر استفاده کرده است.\n"
 )
 
 
-async def start_ai_prompt(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["in_ai_mode"] = True
-    context.user_data["ai_history"] = [
-        {"role": "system", "content": AI_SYSTEM_PROMPT}
-    ]
+    context.user_data["ai_history"] = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
 
     exit_keyboard = ReplyKeyboardMarkup(
         [[KeyboardButton("❌ پایان گفتگو با هوش مصنوعی")]],
@@ -268,19 +250,15 @@ async def start_ai_prompt(
 
     await update.message.reply_text(
         "🧠 وارد بخش گفتگوی هوش مصنوعی شدید!\n\n"
-        "قبل از پاسخ، یک جستجوی کوتاه در وب انجام می‌دهم. "
-        "اگر جستجو نتیجه قابل استفاده‌ای پیدا نکند، به شما می‌گویم.\n"
+        "قبل از پاسخ، یک جستجوی کوتاه در وب انجام می‌دهم.\n"
+        "اگر جستجو برای جواب قطعی کافی نبود، شفاف می‌گویم.\n\n"
         "سؤالت را بنویس.\n\n"
         "برای خروج، دکمه «❌ پایان گفتگو با هوش مصنوعی» را بزن.",
         reply_markup=exit_keyboard,
     )
 
 
-async def ask_groq_ai(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user_question: str,
-):
+async def ask_groq_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, user_question: str):
     if not groq_client:
         await update.message.reply_text(
             "⚠️ سرویس هوش مصنوعی در دسترس نیست؛ "
@@ -288,17 +266,11 @@ async def ask_groq_ai(
         )
         return
 
-    status_msg = await update.message.reply_text(
-        "🔍 در حال جستجو در اینترنت و بررسی پاسخ..."
-    )
+    status_msg = await update.message.reply_text("🔍 در حال جستجو در اینترنت و بررسی پاسخ...")
 
     try:
         # جستجو در وب خارج از مدل هوش مصنوعی انجام می‌شود.
-        search_info = await asyncio.to_thread(
-            web_search,
-            user_question,
-            3,
-        )
+        search_info = await asyncio.to_thread(web_search, user_question, 6)
 
         if search_info:
             model_input = (
@@ -306,14 +278,14 @@ async def ask_groq_ai(
                 f"{search_info}\n\n"
                 "پرسش کاربر:\n"
                 f"{user_question}\n\n"
-                "بر اساس نتایج بالا پاسخ بده. "
-                "اگر نتایج برای پاسخ قطعی کافی نیستند، این را روشن بگو."
+                "با اولویت نتایج وب پاسخ بده. اگر نتایج برای پاسخ قطعی کافی نیستند، "
+                "شفاف توضیح بده چه چیزی قطعی نیست."
             )
         else:
             model_input = (
                 "جستجوی وب انجام شد، اما نتیجه قابل استفاده‌ای برنگشت.\n"
-                "اگر پرسش به اطلاعات لحظه‌ای یا جدید نیاز دارد، "
-                "این محدودیت را صریح بگو و اطلاعاتی را حدس نزن.\n\n"
+                "اگر پرسش به اطلاعات لحظه‌ای یا جدید نیاز دارد، این محدودیت را صریح بگو و حدس نزن.\n"
+                "اگر پرسش دانش عمومی است، می‌توانی از دانش عمومی خودت کمک بگیری.\n\n"
                 f"پرسش کاربر:\n{user_question}"
             )
 
@@ -323,11 +295,7 @@ async def ask_groq_ai(
                 [{"role": "system", "content": AI_SYSTEM_PROMPT}],
             )
         )
-
-        history.append({
-            "role": "user",
-            "content": model_input,
-        })
+        history.append({"role": "user", "content": model_input})
 
         # درخواست همگام Groq در thread اجرا می‌شود تا پاسخ‌گویی بات متوقف نشود.
         completion = await asyncio.to_thread(
@@ -339,15 +307,9 @@ async def ask_groq_ai(
             )
         )
 
-        ai_reply = (
-            completion.choices[0].message.content
-            or "پاسخی دریافت نشد."
-        )
+        ai_reply = completion.choices[0].message.content or "پاسخی دریافت نشد."
 
-        history.append({
-            "role": "assistant",
-            "content": ai_reply,
-        })
+        history.append({"role": "assistant", "content": ai_reply})
 
         # محدود نگه‌داشتن طول تاریخچه مکالمه
         if len(history) > 11:
@@ -359,7 +321,6 @@ async def ask_groq_ai(
 
         if parts:
             await status_msg.edit_text(parts[0])
-
             for part in parts[1:]:
                 await update.message.reply_text(part)
         else:
@@ -367,16 +328,11 @@ async def ask_groq_ai(
 
     except Exception as e:
         print(f"Groq or AI response error: {e}")
-        await status_msg.edit_text(
-            f"❌ خطا در هوش مصنوعی: {e}"
-        )
+        await status_msg.edit_text(f"❌ خطا در هوش مصنوعی: {e}")
 
 
 # --- گزارش‌گیری ادمین ---
-async def export_users(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id != ADMIN_ID:
@@ -394,9 +350,7 @@ async def export_users(
         conn.close()
 
         if df.empty:
-            await update.message.reply_text(
-                "دیتابیس کاربران خالی است!"
-            )
+            await update.message.reply_text("دیتابیس کاربران خالی است!")
             return
 
         file_path = "bot_users.xlsx"
@@ -407,28 +361,18 @@ async def export_users(
                 chat_id=user_id,
                 document=excel_file,
                 filename="bot_users.xlsx",
-                caption=(
-                    f"📊 خروجی اکسل "
-                    f"({len(df)} کاربر ذخیره‌شده):"
-                ),
+                caption=f"📊 خروجی اکسل ({len(df)} کاربر ذخیره‌شده):",
             )
 
     except Exception as e:
-        await update.message.reply_text(
-            f"خطا در ایجاد فایل اکسل: {e}"
-        )
+        await update.message.reply_text(f"خطا در ایجاد فایل اکسل: {e}")
 
 
-async def show_users(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if user_id != ADMIN_ID:
-        await update.message.reply_text(
-            "⛔ شما اجازه دسترسی به این دستور را ندارید!"
-        )
+        await update.message.reply_text("⛔ شما اجازه دسترسی به این دستور را ندارید!")
         return
 
     conn = get_db_connection()
@@ -439,13 +383,10 @@ async def show_users(
     conn.close()
 
     if not users:
-        await update.message.reply_text(
-            "هنوز کاربری ثبت‌نام نکرده است."
-        )
+        await update.message.reply_text("هنوز کاربری ثبت‌نام نکرده است.")
         return
 
     text = "کاربران ثبت‌نام‌شده:\n"
-
     for name, age in users:
         text += f"نام: {name} | سن: {age}\n"
 
@@ -453,10 +394,7 @@ async def show_users(
 
 
 # --- مدیریت کلیه پیام‌های متنی ---
-async def handle_messages(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     # بررسی خروج از هوش مصنوعی
@@ -464,9 +402,7 @@ async def handle_messages(
         context.user_data["in_ai_mode"] = False
         context.user_data.pop("ai_history", None)
 
-        await update.message.reply_text(
-            "👋 گفتگو با هوش مصنوعی پایان یافت."
-        )
+        await update.message.reply_text("👋 گفتگو با هوش مصنوعی پایان یافت.")
         await start(update, context)
         return
 
@@ -477,18 +413,12 @@ async def handle_messages(
 
     # پیام‌های منوی عادی
     if text == "⏰ ساعت فعلی":
-        current_time = datetime.datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        await update.message.reply_text(
-            f"ساعت فعلی: {current_time}"
-        )
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        await update.message.reply_text(f"ساعت فعلی: {current_time}")
 
     elif text == "🎲 عدد شانس":
         lucky_num = random.randint(1, 100)
-        await update.message.reply_text(
-            f"عدد شانس شما: {lucky_num}"
-        )
+        await update.message.reply_text(f"عدد شانس شما: {lucky_num}")
 
     elif text == "🤖 پرسش از هوش مصنوعی":
         await start_ai_prompt(update, context)
@@ -515,24 +445,11 @@ if __name__ == "__main__":
     reg_handler = ConversationHandler(
         entry_points=[
             CommandHandler("register", start_register),
-            MessageHandler(
-                filters.Regex("^📝 ثبت‌نام$"),
-                start_register,
-            ),
+            MessageHandler(filters.Regex("^📝 ثبت‌نام$"), start_register),
         ],
         states={
-            NAME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_name,
-                )
-            ],
-            AGE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    get_age,
-                )
-            ],
+            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -548,12 +465,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("restart", restart))
 
     # کنترل‌کننده تمام متون و دکمه‌های بات
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_messages,
-        )
-    )
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
     if WEBHOOK_URL:
         print(f"Starting webhook on port {PORT}...")
