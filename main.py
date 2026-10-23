@@ -57,6 +57,12 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
     return ConversationHandler.END
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("❌ ثبت‌نام لغو شد.")
+    await start(update, context)
+    return ConversationHandler.END
+
 async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Please enter your name:")
     return NAME
@@ -146,9 +152,7 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    if text == "📝 ثبت‌نام":
-        await update.message.reply_text("برای شروع ثبت‌نام، لطفاً دستور /register را ارسال کنید.")
-    elif text == "⏰ ساعت فعلی":
+    if text == "⏰ ساعت فعلی":
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         await update.message.reply_text(f"Current Time: {current_time}")
     elif text == "🎲 عدد شانس":
@@ -171,9 +175,8 @@ if __name__ == "__main__":
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
     )
-
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
