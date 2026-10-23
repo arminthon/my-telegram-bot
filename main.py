@@ -179,16 +179,14 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("restart", restart))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
-    # راه‌اندازی Webhook برای Render
-    if WEBHOOK_URL:
+        if WEBHOOK_URL:
         print(f"Starting webhook on port {PORT}...")
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path="8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc",
-            webhook_url=f"{WEBHOOK_URL}/{8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc}"
+            webhook_url=f"{WEBHOOK_URL}/8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc"
         )
-else:
-        # اگر لوکال تست کردید با روش پولینگ اجرا شود
-    print("Bot is running with polling (Local)...")
-    app.run_polling()
+    else:
+        print("Starting polling...")
+        app.run_polling()
