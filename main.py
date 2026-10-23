@@ -1,11 +1,12 @@
 import os
 import datetime
-import random
-import pandas as pd
 from zoneinfo import ZoneInfo
+import sqlite3
+import psycopg2
+import pandas as pd
 from dotenv import load_dotenv
 
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -15,274 +16,261 @@ from telegram.ext import (
     filters,
 )
 
-# بارگذاری متغیرهای محیطی
+# لود کردن متغیرهای محیطی
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_ID = 93543054  # آیدی عددی ادمین
 
-# اصلاح آدرس اتصال PostgreSQL برای Render
+# اصلاح آدرس اتصال به PostgreSQL در Render
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-PORT = int(os.environ.get("PORT", "8443"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
-ADMIN_ID = 93543054  # آیدی تلگرام ادمین
+# استیت‌های مربوط به ثبت‌نام
+NAME, AGE, CITY = range(3)
 
-# حالت‌های مختلف مکالمهٔ ثبت‌نام
-NAME, AGE = range(2)
+# کیبوردهای استاندارد
+MAIN_KEYBOARD = [
+    ["📝 ثبت‌نام", "⏰ ساعت فعلی"],
+]
+CANCEL_KEYBOARD = [
+    ["❌ انصراف"]
+]
+
+MENU_BUTTONS = ["📝 ثبت‌نام", "⏰ ساعت فعلی", "❌ انصراف", "/start", "/cancel", "/export"]
 
 
-# اتصال به دیتابیس
+# ------------------ توابع دیتابیس ------------------
 def get_db_connection():
     if DATABASE_URL:
-        import psycopg2
         return psycopg2.connect(DATABASE_URL)
-
-    import sqlite3
     return sqlite3.connect("bot_users.db")
 
 
-# ساخت جدول در صورت نبودن
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            name TEXT,
+            age INTEGER,
+            city TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
 
+
+def save_user(user_id, username, name, age, city):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
     if DATABASE_URL:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                age TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+        query = """
+            INSERT INTO users (user_id, username, name, age, city)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (user_id) 
+            DO UPDATE SET username = EXCLUDED.username,
+                          name = EXCLUDED.name,
+                          age = EXCLUDED.age,
+                          city = EXCLUDED.city;
+        """
+        cursor.execute(query, (user_id, username, name, age, city))
     else:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                age TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+        query = """
+            INSERT INTO users (user_id, username, name, age, city)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) 
+            DO UPDATE SET username = excluded.username,
+                          name = excluded.name,
+                          age = excluded.age,
+                          city = excluded.city;
+        """
+        cursor.execute(query, (user_id, username, name, age, city))
 
     conn.commit()
     cursor.close()
     conn.close()
 
 
-# منوی اصلی
+# ------------------ دستورات عمومی ربات ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [KeyboardButton("📝 ثبت‌نام"), KeyboardButton("⏰ ساعت فعلی")],
-        [KeyboardButton("🎲 عدد شانس")],
-    ]
-
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
+    reply_markup = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True)
     welcome_text = (
-        "سلام! به ربات من خوش آمدید.\n\n"
-        "از دکمه‌های منو برای ثبت‌نام، دیدن ساعت ایران یا گرفتن عدد شانس استفاده کنید."
+        "سلام! به ربات خوش آمدید.\n"
+        "برای ثبت مشخصات روی «📝 ثبت‌نام» و برای دیدن ساعت روی «⏰ ساعت فعلی» بزنید."
     )
-
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await start(update, context)
-    return ConversationHandler.END
+async def show_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # تنظیم ساعت دقیق ایران
+    tehran_tz = ZoneInfo("Asia/Tehran")
+    now_tehran = datetime.datetime.now(tehran_tz)
+    
+    time_str = now_tehran.strftime("%H:%M:%S")
+    date_str = now_tehran.strftime("%Y/%m/%d")
+    
+    reply_markup = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True)
+    msg = f"⏰ ساعت رسمی ایران: {time_str}\n📅 تاریخ: {date_str}"
+    await update.message.reply_text(msg, reply_markup=reply_markup)
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("❌ عملیات لغو شد.")
-    await start(update, context)
-    return ConversationHandler.END
-
-
-# فرآیند ثبت‌نام
+# ------------------ مکالمه ثبت‌نام (Conversation) ------------------
 async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("لطفاً نام خود را وارد کنید:")
+    reply_markup = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
+    await update.message.reply_text(
+        "لطفاً نام خود را وارد کنید:\n(برای انصراف دکمه «❌ انصراف» را بزنید)",
+        reply_markup=reply_markup
+    )
     return NAME
 
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.message.text.strip()
-    context.user_data["name"] = user_name
-
+    text = update.message.text.strip()
+    
+    # اگر کاربر وسط ثبت‌نام دکمه ساعت یا لغو یا منو رو زد
+    if text in MENU_BUTTONS:
+        return await cancel_to_menu(update, context, text)
+        
+    context.user_data["name"] = text
+    reply_markup = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text(
-        f"از آشنایی با شما خوشحالم {user_name}! چند سال دارید؟"
+        f"از آشنایی با شما خوشحالم {text}! چند سال دارید؟ (لطفاً عدد وارد کنید)",
+        reply_markup=reply_markup
     )
     return AGE
 
 
 async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_age = update.message.text.strip()
-
-    if not user_age.isdigit():
-        await update.message.reply_text(
-            "❌ لطفاً فقط عدد وارد کنید (مثلاً 25):"
-        )
+    text = update.message.text.strip()
+    
+    if text in MENU_BUTTONS:
+        return await cancel_to_menu(update, context, text)
+        
+    if not text.isdigit():
+        await update.message.reply_text("لطفاً سن را فقط به صورت عدد وارد کنید:")
         return AGE
 
-    user_name = context.user_data.get("name")
+    context.user_data["age"] = int(text)
+    reply_markup = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
+    await update.message.reply_text("در کدام شهر سکونت دارید؟", reply_markup=reply_markup)
+    return CITY
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    placeholder = "%s" if DATABASE_URL else "?"
 
-    cursor.execute(
-        f"INSERT INTO users (name, age) VALUES ({placeholder}, {placeholder})",
-        (user_name, user_age),
+async def get_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    
+    if text in MENU_BUTTONS:
+        return await cancel_to_menu(update, context, text)
+        
+    user = update.effective_user
+    name = context.user_data.get("name")
+    age = context.user_data.get("age")
+    city = text
+
+    # ذخیره در دیتابیس
+    save_user(
+        user_id=user.id,
+        username=user.username if user.username else "بدون یوزرنیم",
+        name=name,
+        age=age,
+        city=city
     )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
-
+    reply_markup = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text(
-        "✅ ثبت‌نام با موفقیت ذخیره شد!\n"
-        f"نام: {user_name}\n"
-        f"سن: {user_age}"
+        f"✅ اطلاعات شما با موفقیت ثبت شد!\n\n"
+        f"👤 نام: {name}\n"
+        f"🎂 سن: {age}\n"
+        f"🏙 شهر: {city}",
+        reply_markup=reply_markup
     )
-
-    context.user_data.pop("name", None)
+    context.user_data.clear()
     return ConversationHandler.END
 
 
-# خروجی گرفتن از فهرست کاربران؛ فقط برای ادمین
-async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, triggered_button=None):
+    context.user_data.clear()
+    reply_markup = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True)
+    
+    if triggered_button == "⏰ ساعت فعلی":
+        await update.message.reply_text("فرآیند ثبت‌نام لغو شد.")
+        await show_time(update, context)
+    else:
+        await update.message.reply_text("ثبت‌نام لغو شد. به منوی اصلی بازگشتید.", reply_markup=reply_markup)
+        
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await cancel_to_menu(update, context)
+
+
+# ------------------ پنل خروجی اکسل برای ادمین ------------------
+async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
     if user_id != ADMIN_ID:
-        return
-
-    try:
-        conn = get_db_connection()
-        try:
-            df = pd.read_sql_query(
-                "SELECT id, name, age, created_at FROM users",
-                conn,
-            )
-        finally:
-            conn.close()
-
-        if df.empty:
-            await update.message.reply_text("دیتابیس خالی است!")
-            return
-
-        file_path = "bot_users.xlsx"
-        df.to_excel(file_path, index=False)
-
-        with open(file_path, "rb") as file:
-            await context.bot.send_document(
-                chat_id=user_id,
-                document=file,
-                filename="bot_users.xlsx",
-            )
-
-    except Exception as e:
-        print(f"Export error: {e}")
-        await update.message.reply_text(f"خطا در خروجی گرفتن: {e}")
-
-
-# نمایش کاربران؛ فقط برای ادمین
-async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔️ شما اجازه دسترسی به این دستور را ندارید.")
         return
 
     conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT name, age FROM users")
-    users = cursor.fetchall()
-
-    cursor.close()
+    query = "SELECT user_id, username, name, age, city, created_at FROM users;"
+    df = pd.read_sql_query(query, conn)
     conn.close()
 
-    if not users:
-        await update.message.reply_text("کاربری ثبت نشده است.")
+    if df.empty:
+        await update.message.reply_text("هنوز هیچ کاربری در دیتابیس ثبت نشده است.")
         return
 
-    text = "کاربران:\n"
-    for name, age in users:
-        text += f"نام: {name} | سن: {age}\n"
+    file_name = "bot_users.xlsx"
+    df.to_excel(file_name, index=False)
 
-    await update.message.reply_text(text)
+    with open(file_name, "rb") as f:
+        await update.message.reply_document(document=f, caption="📊 لیست کاربران ثبت‌نام شده")
 
-
-# مدیریت پیام‌های منو
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "⏰ ساعت فعلی":
-        iran_time = datetime.datetime.now(ZoneInfo("Asia/Tehran"))
-        await update.message.reply_text(
-            "⏰ ساعت رسمی ایران:\n"
-            f"{iran_time.strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-
-    elif text == "🎲 عدد شانس":
-        await update.message.reply_text(
-            f"عدد شانس: {random.randint(1, 100)}"
-        )
-
-    elif text == "📝 ثبت‌نام":
-        await start_register(update, context)
-
-    else:
-        await update.message.reply_text("متوجه نشدم! لطفاً از منو استفاده کنید.")
+    if os.path.exists(file_name):
+        os.remove(file_name)
 
 
-if __name__ == "__main__":
-    if not TOKEN:
-        raise RuntimeError("متغیر BOT_TOKEN تنظیم نشده است.")
-
+# ------------------ تابع اصلی راه‌اندازی ------------------
+def main():
     init_db()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    reg_handler = ConversationHandler(
+    # تعریف هندلر مکالمه ثبت‌نام
+    conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("register", start_register),
-            MessageHandler(
-                filters.Regex("^📝 ثبت‌نام$"),
-                start_register,
-            ),
+            MessageHandler(filters.Regex("^📝 ثبت‌نام$"), start_register),
+            CommandHandler("register", start_register)
         ],
         states={
-            NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)
-            ],
-            AGE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)
-            ],
+            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
+            CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
-            CommandHandler("restart", restart),
+            MessageHandler(filters.Regex("^❌ انصراف$"), cancel),
+            MessageHandler(filters.Regex("^⏰ ساعت فعلی$"), cancel),
         ],
     )
 
-    app.add_handler(reg_handler)
+    # اتصال هندلرها به اپلیکیشن
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("users", show_users))
-    app.add_handler(CommandHandler("export", export_users))
-    app.add_handler(CommandHandler("restart", restart))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+    app.add_handler(CommandHandler("export", export_excel))
+    app.add_handler(MessageHandler(filters.Regex("^⏰ ساعت فعلی$"), show_time))
+    app.add_handler(conv_handler)
 
-    if WEBHOOK_URL:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
-        )
-    else:
-        app.run_polling()
+    print("ربات با موفقیت روشن شد و آماده به کار است...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
