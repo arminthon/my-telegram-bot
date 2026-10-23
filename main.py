@@ -1,16 +1,15 @@
 import os
 from dotenv import load_dotenv
 
-# این خط باعث میشه پایتون بره محتویات فایل .env رو بخونه
 load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    CallbackQueryHandler,
     ConversationHandler,
     filters,
 )
@@ -18,9 +17,7 @@ import pandas as pd
 import datetime
 import random
 import sqlite3
-import os
 
-TOKEN = os.environ.get("TOKEN", "8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc")
 PORT = int(os.environ.get("PORT", "8443"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") 
 
@@ -198,8 +195,8 @@ if __name__ == "__main__":
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path="8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc",
-            webhook_url=f"{WEBHOOK_URL}/8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc"
+            url_path=TOKEN,
+            webhook_url=f"{WEBHOOK_URL}/{TOKEN}",
         )
     else:
         print("Starting polling...")
