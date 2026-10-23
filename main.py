@@ -145,7 +145,7 @@ async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         completion = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."},
                 {"role": "user", "content": user_question}
@@ -153,6 +153,7 @@ async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE)
             temperature=0.7,
             max_tokens=1024,
         )
+
         ai_reply = completion.choices[0].message.content
         await status_msg.edit_text(ai_reply)
 
