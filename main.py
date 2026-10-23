@@ -185,9 +185,10 @@ if __name__ == "__main__":
         app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
-            url_path="8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc",
-            webhook_url=f"{WEBHOOK_URL}/8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc"
+            url_path=8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc,
+            webhook_url=f"{WEBHOOK_URL}/{8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc}"
         )
+ )
     else:
         # اگر لوکال تست کردید با روش پولینگ اجرا شود
         print("Bot is running with polling (Local)...")
