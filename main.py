@@ -16,10 +16,9 @@ import os
 
 TOKEN = os.environ.get("TOKEN", "8738215541:AAHGTWFcyJDgN8UzP6h0nVHg_0PAr8lxuKc")
 PORT = int(os.environ.get("PORT", "8443"))
-# آدرس اپلیکیشن شما در رندر (بعد از ساخت Web Service در رندر، این URL رو اینجا میگذارید یا از متغیر محیطی میخوانید)
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") 
 
-ADMIN_ID = 93543054  # آیدی تلگرام ادمین (خودت)
+ADMIN_ID = 93543054  # آیدی تلگرام ادمین
 
 # حالت‌های ثبت‌نام
 NAME, AGE = range(2)
@@ -87,11 +86,11 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Registration completed and saved to database!\nName: {user_name}\nAge: {user_age}"
     )
     return ConversationHandler.END
+
 async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"User {user_id} tried to export users. ADMIN_ID is {ADMIN_ID}")
     
-    # بررسی اینکه آیا کاربر همان ادمین اصلی است یا نه
     if user_id != ADMIN_ID:
         await update.message.reply_text(f"شما اجازه دسترسی ندارید. آیدی شما: {user_id}")
         return
@@ -120,7 +119,6 @@ async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error in export: {e}")
         await update.message.reply_text(f"خطا در ایجاد فایل اکسل: {e}")
-
 
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -176,10 +174,11 @@ if __name__ == "__main__":
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("users", show_users))
+    app.add_handler(CommandHandler("export", export_users))
     app.add_handler(CommandHandler("restart", restart))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
 
-        if WEBHOOK_URL:
+    if WEBHOOK_URL:
         print(f"Starting webhook on port {PORT}...")
         app.run_webhook(
             listen="0.0.0.0",
