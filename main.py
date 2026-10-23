@@ -1,8 +1,17 @@
 import os
+import datetime
+import random
+import pandas as pd
 from dotenv import load_dotenv
 
+# لود کردن فایل env
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# اصلاح پروتکل برای اتصال مطمئن به پستگرس
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -13,46 +22,60 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
-import pandas as pd
-import datetime
-import random
-import sqlite3
 
 PORT = int(os.environ.get("PORT", "8443"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") 
-
 ADMIN_ID = 93543054  # آیدی تلگرام ادمین
 
 # حالت‌های ثبت‌نام
 NAME, AGE = range(2)
 
-# ساخت دیتابیس و جدول کاربران
+# تابع اتصال چندمنظوره به دیتابیس
+def get_db_connection():
+    if DATABASE_URL:
+        import psycopg2
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        import sqlite3
+        return sqlite3.connect("bot_users.db")
+
+# ساخت جدول در صورت عدم وجود
 def init_db():
-    conn = sqlite3.connect("bot_users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            age TEXT
-        )
-    """)
+    if DATABASE_URL:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                name TEXT,
+                age TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                age TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
     conn.commit()
+    cursor.close()
     conn.close()
 
-# دستور شروع با دکمه‌های ثابت پایین صفحه
+# دستور شروع
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [KeyboardButton("📝 ثبت‌نام"), KeyboardButton("⏰ ساعت فعلی")],
         [KeyboardButton("🎲 عدد شانس")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
     welcome_text = (
         "سلام! به ربات من خوش آمدید. 🤖\n\n"
         "✨ از دکمه‌های پایین صفحه می‌توانید استفاده کنید:"
     )
-    
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,28 +108,29 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_name = context.user_data.get("name")
     
-    conn = sqlite3.connect("bot_users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO users (name, age) VALUES (?, ?)", (user_name, user_age))
+    # اگر پستگرس باشه علامت %s استفاده می‌کنه، اگر اس‌کیولایت باشه علامت ?
+    placeholder = "%s" if DATABASE_URL else "?"
+    cursor.execute(f"INSERT INTO users (name, age) VALUES ({placeholder}, {placeholder})", (user_name, user_age))
     conn.commit()
+    cursor.close()
     conn.close()
     
     await update.message.reply_text(
-        f"Registration completed and saved to database!\nName: {user_name}\nAge: {user_age}"
+        f"Registration completed and saved permanently!\nName: {user_name}\nAge: {user_age}"
     )
     return ConversationHandler.END
 
 async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    print(f"User {user_id} tried to export users. ADMIN_ID is {ADMIN_ID}")
-    
     if user_id != ADMIN_ID:
         await update.message.reply_text(f"شما اجازه دسترسی ندارید. آیدی شما: {user_id}")
         return
 
     try:
-        conn = sqlite3.connect("bot_users.db")
-        df = pd.read_sql_query("SELECT * FROM users", conn)
+        conn = get_db_connection()
+        df = pd.read_sql_query("SELECT id, name, age, created_at FROM users", conn)
         conn.close()
 
         if df.empty:
@@ -121,25 +145,23 @@ async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=user_id,
                 document=excel_file,
                 filename="bot_users.xlsx",
-                caption="📊 خروجی اکسل از لیست کاربران ربات:"
+                caption=f"📊 خروجی اکسل ({len(df)} کاربر ذخیره‌شده):"
             )
-        print("Excel file sent successfully!")
 
     except Exception as e:
-        print(f"Error in export: {e}")
         await update.message.reply_text(f"خطا در ایجاد فایل اکسل: {e}")
 
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ شما اجازه دسترسی به این دستور را ندارید!")
         return
 
-    conn = sqlite3.connect("bot_users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT name, age FROM users")
     users = cursor.fetchall()
+    cursor.close()
     conn.close()
 
     if not users:
@@ -154,7 +176,6 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-
     if text == "⏰ ساعت فعلی":
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         await update.message.reply_text(f"Current Time: {current_time}")
@@ -166,8 +187,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     init_db()
-    print("CWD:", os.getcwd())
-    print("DB exists:", os.path.exists("bot_users.db"))
+    print("Database initialized successfully.")
 
     app = ApplicationBuilder().token(TOKEN).build()
     
