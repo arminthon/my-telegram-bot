@@ -3,15 +3,20 @@ import datetime
 import random
 import pandas as pd
 from dotenv import load_dotenv
+from groq import Groq
 
-# لود کردن فایل env
+# لود کردن متغیرهای محیطی
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # اصلاح پروتکل برای اتصال مطمئن به پستگرس
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# ساخت کلاینت هوش مصنوعی Groq
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -27,10 +32,11 @@ PORT = int(os.environ.get("PORT", "8443"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "") 
 ADMIN_ID = 93543054  # آیدی تلگرام ادمین
 
-# حالت‌های ثبت‌نام
+# حالت‌های مختلف مکالمه
 NAME, AGE = range(2)
+ASK_AI = 2
 
-# تابع اتصال چندمنظوره به دیتابیس
+# اتصال چندمنظوره به دیتابیس
 def get_db_connection():
     if DATABASE_URL:
         import psycopg2
@@ -65,16 +71,17 @@ def init_db():
     cursor.close()
     conn.close()
 
-# دستور شروع
+# منوی اصلی
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
+        [KeyboardButton("🤖 پرسش از هوش مصنوعی")],
         [KeyboardButton("📝 ثبت‌نام"), KeyboardButton("⏰ ساعت فعلی")],
         [KeyboardButton("🎲 عدد شانس")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     welcome_text = (
-        "سلام! به ربات من خوش آمدید. 🤖\n\n"
-        "✨ از دکمه‌های پایین صفحه می‌توانید استفاده کنید:"
+        "سلام! به ربات من خوش آمدید. 🤖✨\n\n"
+        "برای صحبت با هوش مصنوعی روی «🤖 پرسش از هوش مصنوعی» بزنید."
     )
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
@@ -85,18 +92,19 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("❌ ثبت‌نام لغو شد.")
+    await update.message.reply_text("❌ عملیات لغو شد.")
     await start(update, context)
     return ConversationHandler.END
 
+# --- فرآیند ثبت‌نام ---
 async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Please enter your name:")
+    await update.message.reply_text("لطفاً نام خود را وارد کنید:")
     return NAME
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.message.text
     context.user_data["name"] = user_name
-    await update.message.reply_text(f"Nice to meet you {user_name}! How old are you?")
+    await update.message.reply_text(f"از آشنایی با شما خوشحالم {user_name}! چند سال دارید؟")
     return AGE
 
 async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,7 +118,6 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    # اگر پستگرس باشه علامت %s استفاده می‌کنه، اگر اس‌کیولایت باشه علامت ?
     placeholder = "%s" if DATABASE_URL else "?"
     cursor.execute(f"INSERT INTO users (name, age) VALUES ({placeholder}, {placeholder})", (user_name, user_age))
     conn.commit()
@@ -118,14 +125,47 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     await update.message.reply_text(
-        f"Registration completed and saved permanently!\nName: {user_name}\nAge: {user_age}"
+        f"✅ ثبت‌نام با موفقیت ذخیره شد!\nنام: {user_name}\nسن: {user_age}"
     )
     return ConversationHandler.END
 
+# --- فرآیند هوش مصنوعی ---
+async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧠 هر سوالی دارید بپرسید تا با هوش مصنوعی پاسخ دهم (یا برای لغو /cancel بزنید):")
+    return ASK_AI
+
+async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_question = update.message.text
+    
+    if not groq_client:
+        await update.message.reply_text("⚠️ کلید GROQ_API_KEY تنظیم نشده است.")
+        return ConversationHandler.END
+
+    status_msg = await update.message.reply_text("⏳ در حال فکر کردن و تولید پاسخ...")
+
+    try:
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."},
+                {"role": "user", "content": user_question}
+            ],
+            temperature=0.7,
+            max_tokens=1024,
+        )
+        ai_reply = completion.choices[0].message.content
+        await status_msg.edit_text(ai_reply)
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ خطا در ارتباط با هوش مصنوعی: {e}")
+
+    return ConversationHandler.END
+
+# --- گزارش‌گیری ادمین ---
 async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text(f"شما اجازه دسترسی ندارید. آیدی شما: {user_id}")
+        await update.message.reply_text("شما دسترسی ندارید.")
         return
 
     try:
@@ -168,9 +208,9 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("هنوز کاربری ثبت‌نام نکرده است.")
         return
 
-    text = "Registered Users:\n"
+    text = "کاربران ثبت‌نام‌شده:\n"
     for name, age in users:
-        text += f"Name: {name}, Age: {age}\n"
+        text += f"نام: {name} | سن: {age}\n"
 
     await update.message.reply_text(text)
 
@@ -178,10 +218,10 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "⏰ ساعت فعلی":
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        await update.message.reply_text(f"Current Time: {current_time}")
+        await update.message.reply_text(f"ساعت فعلی: {current_time}")
     elif text == "🎲 عدد شانس":
         lucky_num = random.randint(1, 100)
-        await update.message.reply_text(f"Your Lucky Number: {lucky_num}")
+        await update.message.reply_text(f"عدد شانس شما: {lucky_num}")
     else:
         await update.message.reply_text(text)
 
@@ -191,7 +231,8 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    conv_handler = ConversationHandler(
+    # هندلر ثبت نام
+    reg_handler = ConversationHandler(
         entry_points=[
             CommandHandler("register", start_register),
             MessageHandler(filters.Regex("^📝 ثبت‌نام$"), start_register),
@@ -203,7 +244,20 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
     )
 
-    app.add_handler(conv_handler)
+    # هندلر هوش مصنوعی
+    ai_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("ai", start_ai_prompt),
+            MessageHandler(filters.Regex("^🤖 پرسش از هوش مصنوعی$"), start_ai_prompt),
+        ],
+        states={
+            ASK_AI: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ai_response)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
+    )
+
+    app.add_handler(reg_handler)
+    app.add_handler(ai_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("users", show_users))
     app.add_handler(CommandHandler("export", export_users))
