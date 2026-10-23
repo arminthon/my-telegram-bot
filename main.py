@@ -163,13 +163,17 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("register", start_register)],
+        entry_points=[
+            CommandHandler("register", start_register),
+            MessageHandler(filters.Regex("^📝 ثبت‌نام$"), start_register),
+        ],
         states={
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)],
         },
         fallbacks=[],
     )
+
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
