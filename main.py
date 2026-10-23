@@ -189,7 +189,7 @@ AI_SYSTEM_PROMPT = (
 )
 
 # مدل پیشنهادی پایدار (بدون دردسر tool-calling)
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
 
 
 async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
