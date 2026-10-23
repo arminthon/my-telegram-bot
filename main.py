@@ -11,7 +11,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# اصلاح پروتکل برای اتصال مطمئن به پستگرس
+# اصلاح پروتکل برای اتصال مطمئن به پستگرس در Render
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -36,7 +36,7 @@ ADMIN_ID = 93543054  # آیدی تلگرام ادمین
 NAME, AGE = range(2)
 ASK_AI = 2
 
-# اتصال چندمنظوره به دیتابیس
+# اتصال چندمنظوره به دیتابیس (پستگرس در رندر / اس‌کیولایت لوکال)
 def get_db_connection():
     if DATABASE_URL:
         import psycopg2
@@ -81,7 +81,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     welcome_text = (
         "سلام! به ربات من خوش آمدید. 🤖✨\n\n"
-        "برای صحبت با هوش مصنوعی روی «🤖 پرسش از هوش مصنوعی» بزنید."
+        "برای صحبت پیوسته با هوش مصنوعی روی دکمه «🤖 پرسش از هوش مصنوعی» بزنید."
     )
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
@@ -129,38 +129,73 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# --- فرآیند هوش مصنوعی ---
+# --- فرآیند هوش مصنوعی با حافظه و مکالمه پیوسته ---
 async def start_ai_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧠 هر سوالی دارید بپرسید تا با هوش مصنوعی پاسخ دهم (یا برای لغو /cancel بزنید):")
+    # مقداردهی اولیه حافظه گفتگو برای سشن جدید
+    context.user_data["ai_history"] = [
+        {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
+    ]
+    
+    exit_keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("❌ پایان گفتگو با هوش مصنوعی")]],
+        resize_keyboard=True
+    )
+    
+    await update.message.reply_text(
+        "🧠 وارد بخش گفتگوی هوش مصنوعی شدید!\n\n"
+        "هر سوالی دارید بنویسید؛ گفتگو پیوسته است و ربات پیام‌های قبلی شما را به یاد دارد.\n"
+        "هر زمان کارتان تمام شد، دکمه «❌ پایان گفتگو با هوش مصنوعی» را بزنید.",
+        reply_markup=exit_keyboard
+    )
     return ASK_AI
 
 async def handle_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_question = update.message.text
     
-    if not groq_client:
-        await update.message.reply_text("⚠️ کلید GROQ_API_KEY تنظیم نشده است.")
+    # خروج از حالت گفتگو
+    if user_question == "❌ پایان گفتگو با هوش مصنوعی":
+        context.user_data.pop("ai_history", None)
+        await update.message.reply_text("👋 گفتگو با هوش مصنوعی پایان یافت.")
+        await start(update, context)
         return ConversationHandler.END
 
-    status_msg = await update.message.reply_text("⏳ در حال فکر کردن و تولید پاسخ...")
+    if not groq_client:
+        await update.message.reply_text("⚠️ سرویس هوش مصنوعی در دسترس نیست.")
+        await start(update, context)
+        return ConversationHandler.END
+
+    status_msg = await update.message.reply_text("⏳ در حال پردازش...")
+
+    # تاریخچه مکالمه
+    history = context.user_data.get("ai_history", [
+        {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."}
+    ])
+    history.append({"role": "user", "content": user_question})
 
     try:
         completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-20b",
-            messages=[
-                {"role": "system", "content": "You are a friendly, helpful, and smart AI assistant. Answer in the same language the user uses."},
-                {"role": "user", "content": user_question}
-            ],
+            messages=history,
             temperature=0.7,
             max_tokens=1024,
         )
-
         ai_reply = completion.choices[0].message.content
+        
+        # ذخیره پاسخ بات در تاریخچه
+        history.append({"role": "assistant", "content": ai_reply})
+        
+        # نگه داشتن نهایتاً ۱۰ پیام اخیر برای بهینه‌ماندن مصرف توکن
+        if len(history) > 11:
+            history = [history[0]] + history[-10:]
+        context.user_data["ai_history"] = history
+
         await status_msg.edit_text(ai_reply)
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ خطا در ارتباط با هوش مصنوعی: {e}")
+        await status_msg.edit_text(f"❌ خطا در پردازش هوش مصنوعی: {e}")
 
-    return ConversationHandler.END
+    # برگرداندن ASK_AI برای ادامه داشتن چت
+    return ASK_AI
 
 # --- گزارش‌گیری ادمین ---
 async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,7 +267,7 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # هندلر ثبت نام
+    # هندلر ثبت‌نام
     reg_handler = ConversationHandler(
         entry_points=[
             CommandHandler("register", start_register),
