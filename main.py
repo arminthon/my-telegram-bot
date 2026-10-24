@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from telegram import (
     Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
-    InlineKeyboardButton, InlineKeyboardMarkup
+    InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -71,18 +71,16 @@ def format_to_tehran_shamsi(dt_val):
         else:
             dt = dt_val
 
-        # اگر تایم‌زون نداشت، فرض می‌کنیم UTC است
         if dt.tzinfo is None:
             dt = pytz.utc.localize(dt)
-        # تبدیل دقیق به وقت تهران
         dt_tehran = dt.astimezone(TEHRAN)
 
         jy, jm, jd = gregorian_to_jalali(dt_tehran.year, dt_tehran.month, dt_tehran.day)
         return f"{jy:04d}/{jm:02d}/{jd:02d} - {dt_tehran.strftime('%H:%M:%S')}"
-    except Exception as e:
+    except Exception:
         return str(dt_val)
 
-# ----------------- دیتابیس خودکار -----------------
+# ----------------- دیتابیس -----------------
 import sqlite3
 
 def get_conn():
@@ -324,7 +322,7 @@ def admin_order_actions_kb(order_id: int):
         ]
     ])
 
-# ----------------- نمایش پروفایل کاربر -----------------
+# ----------------- هندلرها -----------------
 async def show_profile_card(target_send_func, uid: int):
     prof = get_user_profile(uid)
     fname = (prof and prof.get("full_name")) or "ثبت نشده ❌"
@@ -344,7 +342,6 @@ async def show_profile_card(target_send_func, uid: int):
     )
     await target_send_func(msg, reply_markup=profile_inline_kb(), parse_mode="Markdown")
 
-# ----------------- دستورات منو و اسلش‌ها -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     uname = update.effective_user.username
@@ -358,7 +355,61 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_profile_card(update.message.reply_text, update.effective_user.id)
 
+# تفکیک دقیق: پیگیری سفارش مشتری با گزارش سفارشات ادمین
 async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    conn, kind = get_conn()
+    cur = conn.cursor()
+
+    # اگر کاربر ادمین باشد، کل آخرین سفارشات دریافتی فروشگاه را می‌بیند
+    if uid == ADMIN_ID:
+        q = (
+            "SELECT order_id, full_name, phone, product_name, qty, price_toman, status FROM orders ORDER BY order_id DESC LIMIT 10;"
+        )
+        cur.execute(q)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text("هیچ سفارشی در سیستم ثبت نشده است.")
+            return
+
+        msg = "📦 **۱۰ سفارش اخیر فروشگاه (پنل مدیریت):**\n\n"
+        for r in rows:
+            msg += (
+                f"🔹 **سفارش #{r[0]}**\n"
+                f"👤 خریدار: {r[1] or 'نامشخص'} (`{r[2] or 'بدون شماره'}`)\n"
+                f"🌸 عطر: {r[3]} ({r[4]} عدد)\n"
+                f"💰 مبلغ: {fmt_price(r[5])}\n"
+                f"وضعیت: **{r[6]}**\n"
+                f"────────────────\n"
+            )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
+    # اگر کاربر عادی باشد: فقط سفارش‌های شخصی خودش را می‌بیند
+    q = (
+        "SELECT order_id, product_name, qty, price_toman, status FROM orders WHERE user_id = %s ORDER BY order_id DESC LIMIT 5;"
+        if kind == "pg" else
+        "SELECT order_id, product_name, qty, price_toman, status FROM orders WHERE user_id = ? ORDER BY order_id DESC LIMIT 5;"
+    )
+    cur.execute(q, (uid,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("شما هنوز هیچ سفارشی در فروشگاه ثبت نکرده‌اید.")
+        return
+
+    msg = "📋 **سفارشات اخیر شما:**\n\n"
+    for r in rows:
+        msg += f"🔹 کد پیگیری #{r[0]}: {r[1]} ({r[2]} عدد) - {fmt_price(r[3])}\nوضعیت: **{r[4]}**\n\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# فقط مخصوص دکمه کیبورد مشتری «پیگیری سفارشات من»
+async def user_my_orders_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     conn, kind = get_conn()
     cur = conn.cursor()
@@ -378,15 +429,17 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📋 **سفارشات اخیر شما:**\n\n"
     for r in rows:
-        msg += f"🔹 سفارش #{r[0]}: {r[1]} ({r[2]} عدد) - {fmt_price(r[3])}\nوضعیت: **{r[4]}**\n\n"
+        msg += f"🔹 کد سفارش #{r[0]}: {r[1]} ({r[2]} عدد) - {fmt_price(r[3])}\nوضعیت: **{r[4]}**\n\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔️ این دستور فقط مخصوص مدیریت فروشگاه است.")
         return
+
     conn, kind = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT user_id, username, full_name, phone FROM users ORDER BY user_id DESC LIMIT 15;")
+    cur.execute("SELECT user_id, username, full_name, phone FROM users ORDER BY user_id DESC LIMIT 20;")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -395,9 +448,10 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("هیچ کاربری در سیستم ثبت نشده است.")
         return
 
-    msg = "👥 **لیست ۱۵ کاربر اخیر:**\n\n"
+    msg = "👥 **لیست ۲۰ کاربر اخیر ثبت شده در سیستم:**\n\n"
     for u in rows:
-        msg += f"• `{u[0]}` | @{u[1] or '—'} | {u[2] or 'بدون نام'} | `{u[3] or 'بدون شماره'}`\n"
+        uname = f"@{u[1]}" if u[1] else "ندارد"
+        msg += f"• `{u[0]}` | {uname}\n  👤 {u[2] or 'بدون نام'} | 📞 `{u[3] or 'بدون شماره'}`\n\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ----------------- مکالمه پروفایل -----------------
@@ -452,7 +506,7 @@ async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✏️ تکمیل پروفایل و آدرس", callback_data="btn_edit_profile")]
         ])
         await update.message.reply_text(
-            "⚠️ قبل از ثبت سفارش باید اطلاعات تماس و آدرس خود را ثبت کنید.\n"
+            "⚠️ قبل از ثبت سفارش باید اطلاعات تماس و آدرس خود را در پروفایل تکمیل کنید.\n"
             "روی دکمه شیشه‌ای زیر بزنید:",
             reply_markup=inline_kb
         )
@@ -616,9 +670,10 @@ async def handle_admin_order_decision(update: Update, context: ContextTypes.DEFA
         except Exception as e:
             logging.error(f"Error notifying buyer {buyer_id}: {e}")
 
-# ----------------- بخش اکسل ادمین (با تاریخ شمسی و ساعت تهران) -----------------
+# ----------------- خروجی اکسل -----------------
 async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔️ این دستور فقط مخصوص مدیریت فروشگاه است.")
         return
     try:
         conn, _ = get_conn()
@@ -630,11 +685,9 @@ async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("هیچ سفارشی در دیتابیس ثبت نشده است.")
             return
 
-        # تبدیل تاریخ و ساعت میلادی/UTC به شمسی و وقت تهران
         if "created_at" in df.columns:
             df["created_at"] = df["created_at"].apply(format_to_tehran_shamsi)
 
-        # نام‌گذاری شکیل و فارسی ستون‌ها در فایل اکسل
         rename_map = {
             "order_id": "شناسه سفارش",
             "user_id": "شناسه عددی کاربر",
@@ -656,7 +709,6 @@ async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         buf.seek(0)
         file_bytes = buf.getvalue()
 
-        # نام فایل خروجی بر اساس زمان شمسی لحظه‌ای
         now_tehran = datetime.now(TEHRAN)
         jy, jm, jd = gregorian_to_jalali(now_tehran.year, now_tehran.month, now_tehran.day)
         filename = f"orders_{jy:04d}{jm:02d}{jd:02d}_{now_tehran.strftime('%H%M')}.xlsx"
@@ -751,7 +803,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if txt == "🛍 مشاهده محصولات":
         await show_all_products(update.message)
     elif txt == "🧾 پیگیری سفارشات من":
-        await cmd_orders(update, context)
+        await user_my_orders_btn(update, context)
     elif txt == "👤 پروفایل من":
         await show_profile_card(update.message.reply_text, uid)
     elif txt == "🔙 بازگشت به منوی اصلی":
@@ -768,11 +820,31 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif txt == "👥 لیست کاربران":
         await cmd_users(update, context)
 
+# ----------------- تنظیم خودکار منوی دستورات تلگرام (Menu Button) -----------------
+async def post_init(application: Application):
+    # دستورات منوی عمومی برای همه کاربران
+    user_commands = [
+        BotCommand("start", "🏠 منوی اصلی"),
+        BotCommand("profile", "👤 پروفایل و آدرس"),
+        BotCommand("orders", "🧾 پیگیری سفارشات من"),
+        BotCommand("register", "✏️ ثبت نام / ویرایش اطلاعات")
+    ]
+    await application.bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+    # دستورات ویژه و اختصاصی فقط برای چت ادمین
+    admin_commands = user_commands + [
+        BotCommand("users", "👥 لیست کاربران (ادمین)"),
+        BotCommand("export", "📊 خروجی اکسل سفارشات (ادمین)")
+    ]
+    try:
+        await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
+    except Exception as e:
+        logging.warning(f"Could not set admin commands scope: {e}")
+
 def main():
     db_setup()
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # مکالمه ثبت‌نام / ویرایش پروفایل
     prof_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(profile_edit_start, pattern=r"^btn_edit_profile$"),
