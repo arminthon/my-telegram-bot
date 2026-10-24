@@ -81,6 +81,14 @@ def init_db():
                     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            # مایگریشن خودکار برای جدول کاربران در صورتی که قبلاً با ستون‌های متفاوتی ساخته شده باشد
+            cur.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS postal_code TEXT;
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+            """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     sku VARCHAR(100) PRIMARY KEY,
@@ -486,7 +494,7 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
     cur.close()
     conn.close()
 
-# ---------- ثبت‌نام با اعتبارسنجی و ذخیره‌سازی قطعی ----------
+# ---------- ثبت‌نام و دریافت مشخصات ----------
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "لطفاً **نام و نام‌خانوادگی** خود را وارد فرمایید:\n"
@@ -572,7 +580,6 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = conn.cursor()
 
         if IS_POSTGRES:
-            # استفاده از UPSERT استاندارد در PostgreSQL
             cur.execute("""
                 INSERT INTO users (user_id, full_name, phone, address, postal_code, registered_at)
                 VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
@@ -584,7 +591,6 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     registered_at = CURRENT_TIMESTAMP;
             """, (user_id, name, phone, addr, text))
         else:
-            # استفاده از UPSERT در SQLite
             cur.execute("""
                 INSERT INTO users (user_id, full_name, phone, address, postal_code, registered_at)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -828,6 +834,7 @@ def main():
     if not TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN تعریف نشده است!")
 
+    # ساخت و اصلاح خودکار ستون‌های دیتابیس
     init_db()
 
     app = ApplicationBuilder().token(TOKEN).build()
