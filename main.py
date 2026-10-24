@@ -59,15 +59,17 @@ def get_db_connection():
         import psycopg2
         return psycopg2.connect(DATABASE_URL)
     return sqlite3.connect("bot_users.db")
-
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
 
     if DATABASE_URL:
-        # ساخت جدول‌ها برای PostgreSQL
+        # حذف جدول‌های ناسازگار قبلی روی رندر و ساخت جدول استاندارد جدید
+        cur.execute("DROP TABLE IF EXISTS users CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS orders CASCADE;")
+        
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 name TEXT,
@@ -76,23 +78,8 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        # اصلاح ستون‌ها در صورت وجود جدول قدیمی از پروژه‌های قبل
-        alter_cols = [
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id BIGINT;",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;",
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"
-        ]
-        for q in alter_cols:
-            try:
-                cur.execute(q)
-            except Exception:
-                pass
-
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
+            CREATE TABLE orders (
                 order_id BIGINT PRIMARY KEY,
                 user_id BIGINT,
                 perfume_name TEXT,
@@ -105,7 +92,6 @@ def init_db():
             );
         """)
     else:
-        # ساخت جدول‌ها برای SQLite محلی
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -133,6 +119,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
+
 
 def db_execute(query, params=(), fetch=False):
     conn = get_db_connection()
