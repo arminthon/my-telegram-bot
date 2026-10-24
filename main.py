@@ -52,6 +52,7 @@ IS_POSTGRES = False
 if DATABASE_URL and DATABASE_URL.startswith("postgres"):
     IS_POSTGRES = True
     import psycopg2
+    from psycopg2.extras import DictCursor
 else:
     import sqlite3
 
@@ -69,107 +70,112 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    if IS_POSTGRES:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                full_name TEXT,
-                phone TEXT,
-                address TEXT,
-                postal_code TEXT,
-                registered_at TIMESTAMP
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                sku VARCHAR(100) PRIMARY KEY,
-                product_name TEXT NOT NULL,
-                brand TEXT,
-                volume_ml INT,
-                price_toman BIGINT NOT NULL,
-                stock_qty INT DEFAULT 0,
-                active BOOLEAN DEFAULT TRUE,
-                tags TEXT,
-                description TEXT,
-                photo_file_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                product_sku VARCHAR(100),
-                product_name TEXT,
-                price_toman BIGINT,
-                receipt_file_id TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP
-            );
-        """)
-    else:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                full_name TEXT,
-                phone TEXT,
-                address TEXT,
-                postal_code TEXT,
-                registered_at TIMESTAMP
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                sku TEXT PRIMARY KEY,
-                product_name TEXT NOT NULL,
-                brand TEXT,
-                volume_ml INTEGER,
-                price_toman INTEGER NOT NULL,
-                stock_qty INTEGER DEFAULT 0,
-                active BOOLEAN DEFAULT 1,
-                tags TEXT,
-                description TEXT,
-                photo_file_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                product_sku TEXT,
-                product_name TEXT,
-                price_toman INTEGER,
-                receipt_file_id TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP
-            );
-        """)
-
-    cur.execute("SELECT COUNT(*) FROM products;")
-    count = cur.fetchone()[0]
-    if count == 0:
-        default_items = [
-            ("perfume_dior_sauvage_100", "عطر Dior Sauvage", "Dior", 100, 2500000, 15, True, "مردانه,خنک,تند", "یکی از پرطرفدارترین عطرهای مردانه با رایحه ترنج و فلفل"),
-            ("perfume_bleu_chanel_100", "عطر Bleu de Chanel", "Chanel", 100, 3200000, 10, True, "مردانه,خنک,چوبی", "عطری ماندگار و شیک مناسب استفاده رسمی و روزمره"),
-            ("perfume_ysl_lhomme_100", "عطر YSL L'Homme", "YSL", 100, 2800000, 8, True, "مردانه,ملایم,چوبی", "ترکیبی جذاب از زنجبیل و رایحه‌های چوبی مرکباتی")
-        ]
+    try:
         if IS_POSTGRES:
-            cur.executemany("""
-                INSERT INTO products (sku, product_name, brand, volume_ml, price_toman, stock_qty, active, tags, description)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, default_items)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    full_name TEXT,
+                    phone TEXT,
+                    address TEXT,
+                    postal_code TEXT,
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    sku VARCHAR(100) PRIMARY KEY,
+                    product_name TEXT NOT NULL,
+                    brand TEXT,
+                    volume_ml INT,
+                    price_toman BIGINT NOT NULL,
+                    stock_qty INT DEFAULT 0,
+                    active BOOLEAN DEFAULT TRUE,
+                    tags TEXT,
+                    description TEXT,
+                    photo_file_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders (
+                    order_id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    product_sku VARCHAR(100),
+                    product_name TEXT,
+                    price_toman BIGINT,
+                    receipt_file_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
         else:
-            cur.executemany("""
-                INSERT INTO products (sku, product_name, brand, volume_ml, price_toman, stock_qty, active, tags, description)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, default_items)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    full_name TEXT,
+                    phone TEXT,
+                    address TEXT,
+                    postal_code TEXT,
+                    registered_at TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    sku TEXT PRIMARY KEY,
+                    product_name TEXT NOT NULL,
+                    brand TEXT,
+                    volume_ml INTEGER,
+                    price_toman INTEGER NOT NULL,
+                    stock_qty INTEGER DEFAULT 0,
+                    active BOOLEAN DEFAULT 1,
+                    tags TEXT,
+                    description TEXT,
+                    photo_file_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS orders (
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    product_sku TEXT,
+                    product_name TEXT,
+                    price_toman INTEGER,
+                    receipt_file_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP
+                );
+            """)
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        cur.execute("SELECT COUNT(*) FROM products;")
+        count = cur.fetchone()[0]
+        if count == 0:
+            default_items = [
+                ("perfume_dior_sauvage_100", "عطر Dior Sauvage", "Dior", 100, 2500000, 15, True, "مردانه,خنک,تند", "یکی از پرطرفدارترین عطرهای مردانه با رایحه ترنج و فلفل"),
+                ("perfume_bleu_chanel_100", "عطر Bleu de Chanel", "Chanel", 100, 3200000, 10, True, "مردانه,خنک,چوبی", "عطری ماندگار و شیک مناسب استفاده رسمی و روزمره"),
+                ("perfume_ysl_lhomme_100", "عطر YSL L'Homme", "YSL", 100, 2800000, 8, True, "مردانه,ملایم,چوبی", "ترکیبی جذاب از زنجبیل و رایحه‌های چوبی مرکباتی")
+            ]
+            if IS_POSTGRES:
+                cur.executemany("""
+                    INSERT INTO products (sku, product_name, brand, volume_ml, price_toman, stock_qty, active, tags, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """, default_items)
+            else:
+                cur.executemany("""
+                    INSERT INTO products (sku, product_name, brand, volume_ml, price_toman, stock_qty, active, tags, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, default_items)
+
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error during init_db: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
 
 # استیت‌های مکالمه
 REG_NAME, REG_PHONE, REG_ADDRESS, REG_POSTAL = range(4)
@@ -178,7 +184,6 @@ IMPORT_WAIT_FILE = 5
 
 ITEMS_PER_PAGE = 4
 
-# لیست دکمه‌های منو
 RAW_MENU_BUTTONS = [
     "🛍 محصولات و سفارش",
     "👤 پروفایل من",
@@ -189,7 +194,6 @@ RAW_MENU_BUTTONS = [
     "❌ انصراف"
 ]
 
-# ساخت پترن رجکس امن
 MENU_REGEX_PATTERN = "^(" + "|".join(re.escape(btn) for btn in RAW_MENU_BUTTONS) + ")$"
 MENU_BUTTON_FILTER = filters.Regex(MENU_REGEX_PATTERN)
 
@@ -216,12 +220,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, reply_markup=get_main_keyboard(is_admin), parse_mode="Markdown")
 
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT sku, product_name, volume_ml, price_toman, stock_qty FROM products WHERE active = TRUE ORDER BY brand, product_name;")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT sku, product_name, volume_ml, price_toman, stock_qty FROM products WHERE active = TRUE ORDER BY brand, product_name;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error fetching catalog: {e}")
+        rows = []
 
     if not rows:
         text = "در حال حاضر هیچ محصول فعالی در فروشگاه ثبت نشده است."
@@ -278,21 +286,26 @@ async def handle_buy_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     sku = query.data.replace("buy_", "")
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if IS_POSTGRES:
-        cur.execute("SELECT product_name, price_toman, stock_qty FROM products WHERE sku = %s;", (sku,))
-    else:
-        cur.execute("SELECT product_name, price_toman, stock_qty FROM products WHERE sku = ?;", (sku,))
-    prod = cur.fetchone()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if IS_POSTGRES:
+            cur.execute("SELECT product_name, price_toman, stock_qty FROM products WHERE sku = %s;", (sku,))
+        else:
+            cur.execute("SELECT product_name, price_toman, stock_qty FROM products WHERE sku = ?;", (sku,))
+        prod = cur.fetchone()
 
-    if IS_POSTGRES:
-        cur.execute("SELECT full_name, phone, address FROM users WHERE user_id = %s;", (user_id,))
-    else:
-        cur.execute("SELECT full_name, phone, address FROM users WHERE user_id = ?;", (user_id,))
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
+        if IS_POSTGRES:
+            cur.execute("SELECT full_name, phone, address FROM users WHERE user_id = %s;", (user_id,))
+        else:
+            cur.execute("SELECT full_name, phone, address FROM users WHERE user_id = ?;", (user_id,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"DB Error in buy click: {e}")
+        prod = None
+        user = None
 
     if not prod:
         await query.message.reply_text("متأسفانه این عطر در انبار یافت نشد.")
@@ -351,63 +364,67 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tehran_tz = pytz.timezone("Asia/Tehran")
     now_tehran = datetime.now(tehran_tz)
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if IS_POSTGRES:
-        cur.execute("""
-            INSERT INTO orders (user_id, product_sku, product_name, price_toman, receipt_file_id, status, created_at)
-            VALUES (%s, %s, %s, %s, %s, 'pending', %s) RETURNING order_id;
-        """, (user_id, order_data["sku"], order_data["name"], order_data["price"], file_id, now_tehran))
-        order_id = cur.fetchone()[0]
-    else:
-        cur.execute("""
-            INSERT INTO orders (user_id, product_sku, product_name, price_toman, receipt_file_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?);
-        """, (user_id, order_data["sku"], order_data["name"], order_data["price"], file_id, now_tehran))
-        order_id = cur.lastrowid
-    
-    if IS_POSTGRES:
-        cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = %s;", (user_id,))
-    else:
-        cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = ?;", (user_id,))
-    u = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if IS_POSTGRES:
+            cur.execute("""
+                INSERT INTO orders (user_id, product_sku, product_name, price_toman, receipt_file_id, status, created_at)
+                VALUES (%s, %s, %s, %s, %s, 'pending', %s) RETURNING order_id;
+            """, (user_id, order_data["sku"], order_data["name"], order_data["price"], file_id, now_tehran))
+            order_id = cur.fetchone()[0]
+        else:
+            cur.execute("""
+                INSERT INTO orders (user_id, product_sku, product_name, price_toman, receipt_file_id, status, created_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?);
+            """, (user_id, order_data["sku"], order_data["name"], order_data["price"], file_id, now_tehran))
+            order_id = cur.lastrowid
+        
+        if IS_POSTGRES:
+            cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = %s;", (user_id,))
+        else:
+            cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = ?;", (user_id,))
+        u = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
 
-    u_name = u[0] if IS_POSTGRES else u["full_name"]
-    u_phone = u[1] if IS_POSTGRES else u["phone"]
-    u_addr = u[2] if IS_POSTGRES else u["address"]
-    u_post = u[3] if IS_POSTGRES else u["postal_code"]
+        u_name = u[0] if (u and IS_POSTGRES) else (u["full_name"] if u else "نامشخص")
+        u_phone = u[1] if (u and IS_POSTGRES) else (u["phone"] if u else "-")
+        u_addr = u[2] if (u and IS_POSTGRES) else (u["address"] if u else "-")
+        u_post = u[3] if (u and IS_POSTGRES) else (u["postal_code"] if u else "-")
 
-    await update.message.reply_text(
-        f"✅ سفارش شماره #{order_id} با موفقیت ثبت شد!\n"
-        "رسید شما جهت بررسی و تأیید برای مدیریت ارسال گردید.",
-        reply_markup=get_main_keyboard(user_id == ADMIN_ID)
-    )
+        await update.message.reply_text(
+            f"✅ سفارش شماره #{order_id} با موفقیت ثبت شد!\n"
+            "رسید شما جهت بررسی و تأیید برای مدیریت ارسال گردید.",
+            reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+        )
 
-    admin_caption = (
-        f"🚨 **سفارش جدید دریافت شد!** (#{order_id})\n\n"
-        f"🛍 محصول: {order_data['name']}\n"
-        f"💰 مبلغ: {order_data['price']:,.0f} تومان\n"
-        f"👤 مشتری: {u_name} (شناسه: `{user_id}`)\n"
-        f"📞 شماره تماس: `{u_phone}`\n"
-        f"📮 کدپستی: `{u_post}`\n"
-        f"📍 نشانی: {u_addr}"
-    )
-    admin_kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ تایید سفارش", callback_data=f"appr_{order_id}"),
-            InlineKeyboardButton("❌ رد سفارش", callback_data=f"rejc_{order_id}")
-        ]
-    ])
-    await context.bot.send_photo(
-        chat_id=ADMIN_ID,
-        photo=file_id,
-        caption=admin_caption,
-        reply_markup=admin_kb,
-        parse_mode="Markdown"
-    )
+        admin_caption = (
+            f"🚨 **سفارش جدید دریافت شد!** (#{order_id})\n\n"
+            f"🛍 محصول: {order_data['name']}\n"
+            f"💰 مبلغ: {order_data['price']:,.0f} تومان\n"
+            f"👤 مشتری: {u_name} (شناسه: `{user_id}`)\n"
+            f"📞 شماره تماس: `{u_phone}`\n"
+            f"📮 کدپستی: `{u_post}`\n"
+            f"📍 نشانی: {u_addr}"
+        )
+        admin_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ تایید سفارش", callback_data=f"appr_{order_id}"),
+                InlineKeyboardButton("❌ رد سفارش", callback_data=f"rejc_{order_id}")
+            ]
+        ])
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=file_id,
+            caption=admin_caption,
+            reply_markup=admin_kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error handling order receipt: {e}")
+        await update.message.reply_text("خطایی در ثبت سفارش رخ داد. لطفاً مجدداً تلاش کنید.")
 
     context.user_data.pop("current_order", None)
     return ConversationHandler.END
@@ -465,7 +482,7 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
     cur.close()
     conn.close()
 
-# فرآیند ثبت‌نام
+# بخش ثبت‌نام و مدیریت کاربر
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "لطفاً **نام و نام‌خانوادگی** خود را وارد فرمایید:\n"
@@ -477,8 +494,8 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def reg_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if len(text) < 3:
-        await update.message.reply_text("لطفاً نام و نام خانوادگی را به شکل کامل وارد کنید:")
+    if len(text) < 2:
+        await update.message.reply_text("لطفاً نام و نام خانوادگی را کامل بنویسید:")
         return REG_NAME
 
     context.user_data["reg_name"] = text
@@ -510,54 +527,87 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
     postal_code = text
-    name = context.user_data.get("reg_name")
-    phone = context.user_data.get("reg_phone")
-    addr = context.user_data.get("reg_address")
-    now = datetime.now(pytz.timezone("Asia/Tehran"))
+    name = context.user_data.get("reg_name", "")
+    phone = context.user_data.get("reg_phone", "")
+    addr = context.user_data.get("reg_address", "")
+    is_admin = (user_id == ADMIN_ID)
 
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if IS_POSTGRES:
-        cur.execute("""
-            INSERT INTO users (user_id, full_name, phone, address, postal_code, registered_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET
-                full_name = EXCLUDED.full_name,
-                phone = EXCLUDED.phone,
-                address = EXCLUDED.address,
-                postal_code = EXCLUDED.postal_code;
-        """, (user_id, name, phone, addr, postal_code, now))
-    else:
-        cur.execute("""
-            INSERT OR REPLACE INTO users (user_id, full_name, phone, address, postal_code, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?);
-        """, (user_id, name, phone, addr, postal_code, now))
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # چک می‌کنیم کاربر از قبل وجود دارد یا خیر
+        if IS_POSTGRES:
+            cur.execute("SELECT user_id FROM users WHERE user_id = %s;", (user_id,))
+        else:
+            cur.execute("SELECT user_id FROM users WHERE user_id = ?;", (user_id,))
+        existing = cur.fetchone()
 
-    await update.message.reply_text(
-        "🎉 مشخصات شما با موفقیت ثبت گردید!\nهم‌اکنون می‌توانید عطر مورد نظر را سفارش دهید.",
-        reply_markup=get_main_keyboard(user_id == ADMIN_ID)
-    )
+        if existing:
+            if IS_POSTGRES:
+                cur.execute("""
+                    UPDATE users 
+                    SET full_name = %s, phone = %s, address = %s, postal_code = %s 
+                    WHERE user_id = %s;
+                """, (name, phone, addr, postal_code, user_id))
+            else:
+                cur.execute("""
+                    UPDATE users 
+                    SET full_name = ?, phone = ?, address = ?, postal_code = ? 
+                    WHERE user_id = ?;
+                """, (name, phone, addr, postal_code, user_id))
+        else:
+            if IS_POSTGRES:
+                cur.execute("""
+                    INSERT INTO users (user_id, full_name, phone, address, postal_code)
+                    VALUES (%s, %s, %s, %s, %s);
+                """, (user_id, name, phone, addr, postal_code))
+            else:
+                cur.execute("""
+                    INSERT INTO users (user_id, full_name, phone, address, postal_code)
+                    VALUES (?, ?, ?, ?, ?);
+                """, (user_id, name, phone, addr, postal_code))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        await update.message.reply_text(
+            "🎉 مشخصات شما با موفقیت ثبت شد!\nهم‌اکنون می‌توانید عطر مورد نظر خود را سفارش دهید.",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+    except Exception as e:
+        logger.error(f"Error saving user profile: {e}")
+        await update.message.reply_text(
+            "⚠️ در ذخیره‌سازی اطلاعات خطایی رخ داد، لطفاً دوباره تلاش کنید.",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = get_db_connection()
-    cur = conn.cursor()
-    if IS_POSTGRES:
-        cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = %s;", (user_id,))
-    else:
-        cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = ?;", (user_id,))
-    u = cur.fetchone()
-    cur.close()
-    conn.close()
+    is_admin = (user_id == ADMIN_ID)
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        if IS_POSTGRES:
+            cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = %s;", (user_id,))
+        else:
+            cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = ?;", (user_id,))
+        u = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error fetching profile: {e}")
+        u = None
 
     if not u or not u[0]:
         await update.message.reply_text(
-            "هنوز مشخصاتی برای شما ثبت نشده است.\nلطفاً دکمه «📋 ثبت / ویرایش اطلاعات» را بزنید.",
-            reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+            "هنوز مشخصاتی برای شما ثبت نشده است.\nلطفاً دکمه «📋 ثبت / ویرایش اطلاعات» را انتخاب نمایید.",
+            reply_markup=get_main_keyboard(is_admin)
         )
         return
 
@@ -568,13 +618,13 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"👤 **پروفایل کاربری شما:**\n\n"
-        f"🏷 نام: {name}\n"
-        f"📞 تماس: {phone}\n"
-        f"📮 کدپستی: {post}\n"
-        f"📍 نشانی: {addr}\n\n"
-        "جهت تغییر مشخصات دکمه «📋 ثبت / ویرایش اطلاعات» را بزنید."
+        f"🏷 **نام:** {name}\n"
+        f"📞 **تلفن:** {phone}\n"
+        f"📮 **کدپستی:** {post}\n"
+        f"📍 **نشانی:** {addr}\n\n"
+        "جهت تغییر مشخصات، دکمه «📋 ثبت / ویرایش اطلاعات» را بزنید."
     )
-    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id == ADMIN_ID))
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard(is_admin))
 
 async def start_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
