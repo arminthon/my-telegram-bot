@@ -29,7 +29,7 @@ SUPPORT_TEXT = "آیدی پشتیبانی تلگرام: @Armin_Support_Shop\nت�
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# ----------------- پایگاه داده -----------------
+# ----------------- دیتابیس خودکار -----------------
 import sqlite3
 
 def get_conn():
@@ -42,6 +42,7 @@ def db_setup():
     conn, kind = get_conn()
     cur = conn.cursor()
     if kind == "pg":
+        # ساخت جدول‌ها در صورتی که نباشند
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -67,6 +68,33 @@ def db_setup():
                 created_at TIMESTAMPTZ DEFAULT now()
             );
         """)
+        # اضافه کردن ستون‌های جاافتاده برای حل قطعی خطای UndefinedColumn
+        user_cols = [
+            ("username", "TEXT"),
+            ("full_name", "TEXT"),
+            ("phone", "TEXT"),
+            ("address", "TEXT"),
+            ("joined_at", "TIMESTAMPTZ DEFAULT now()")
+        ]
+        for col, col_type in user_cols:
+            cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {col_type};")
+
+        order_cols = [
+            ("username", "TEXT"),
+            ("full_name", "TEXT"),
+            ("phone", "TEXT"),
+            ("address", "TEXT"),
+            ("sku", "TEXT"),
+            ("product_name", "TEXT"),
+            ("qty", "INT DEFAULT 1"),
+            ("price_toman", "BIGINT DEFAULT 0"),
+            ("receipt_file_id", "TEXT"),
+            ("status", "TEXT DEFAULT 'در انتظار تایید پرداخت'"),
+            ("created_at", "TIMESTAMPTZ DEFAULT now()")
+        ]
+        for col, col_type in order_cols:
+            cur.execute(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col} {col_type};")
+
     else:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -203,7 +231,6 @@ def main_kb(user_id: int):
         ["👤 پروفایل من", "💳 شماره کارت فروشگاه"],
         ["📞 ارتباط با پشتیبانی"]
     ]
-    # اگر خودت هستی دکمه‌های ادمین ظاهر شوند
     if int(user_id) == ADMIN_ID:
         menu.append(["📊 خروجی اکسل سفارشات", "📥 بروزرسانی فایل محصولات"])
         menu.append(["🖼 دریافت شناسه عکس محصول"])
@@ -212,12 +239,12 @@ def main_kb(user_id: int):
 def cancel_kb():
     return ReplyKeyboardMarkup([["❌ انصراف"]], resize_keyboard=True)
 
-# ----------------- هندلر شروع -----------------
+# ----------------- دستور /start -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     uname = update.effective_user.username
     upsert_user(uid, uname)
-    role_msg = " (ورود به عنوان مدیر فروشگاه)" if uid == ADMIN_ID else ""
+    role_msg = " (پنل مدیریت فعال)" if uid == ADMIN_ID else ""
     await update.message.reply_text(
         f"سلام خوش آمدید به {SHOP_NAME}{role_msg} 🌸\nلطفاً یک گزینه را انتخاب کنید:",
         reply_markup=main_kb(uid)
@@ -238,7 +265,7 @@ async def profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏷 نام و نام خانوادگی: {fname}\n"
         f"📞 شماره موبایل: {phone}\n"
         f"📍 آدرس پستی: {addr}\n\n"
-        "جهت تغییر یا تکمیل اطلاعات، دکمه زیر را فشار دهید:"
+        "جهت تکمیل یا ویرایش اطلاعات، دکمه زیر را لمس کنید:"
     )
     kb = ReplyKeyboardMarkup([["✏️ ویرایش مشخصات"], ["🔙 بازگشت به منوی اصلی"]], resize_keyboard=True)
     await update.message.reply_text(msg, reply_markup=kb, parse_mode="Markdown")
@@ -254,7 +281,7 @@ async def profile_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def profile_edit_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["prof_phone"] = update.message.text.strip()
-    await update.message.reply_text("لطفاً **آدرس دقیق پستی و کد پستی** خود را بنویسید:", reply_markup=cancel_kb())
+    await update.message.reply_text("لطفاً **آدرس پستی دقیق همراه با کدپستی** را وارد کنید:", reply_markup=cancel_kb())
     return PROF_ADDR
 
 async def profile_edit_addr(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -268,21 +295,20 @@ async def profile_edit_addr(update: Update, context: ContextTypes.DEFAULT_TYPE):
         address=addr
     )
     context.user_data.clear()
-    await update.message.reply_text("✅ اطلاعات شما با موفقیت ثبت شد!", reply_markup=main_kb(uid))
+    await update.message.reply_text("✅ مشخصات شما با موفقیت ثبت شد!", reply_markup=main_kb(uid))
     return ConversationHandler.END
 
-# ----------------- مکالمه خرید و ارسال فیش -----------------
+# ----------------- مکالمه خرید و فیش -----------------
 BUY_QTY, BUY_RECEIPT = range(20, 22)
 
 async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     prof = get_user_profile(uid)
-    
-    # اجبار تکمیل پروفایل قبل از خرید
+
     if not prof or not prof.get("full_name") or not prof.get("phone") or not prof.get("address"):
         await update.message.reply_text(
-            "⚠️ کاربر گرامی، قبل از سفارش باید مشخصات پستی خود را تکمیل نمایید.\n\n"
-            "روی دکمه «👤 پروفایل من» کلیک کنید و مشخصات خود را ثبت نمایید.",
+            "⚠️ قبل از ثبت سفارش باید اطلاعات تماس و آدرس خود را تکمیل کنید.\n\n"
+            "روی دکمه «👤 پروفایل من» کلیک کنید.",
             reply_markup=main_kb(uid)
         )
         return ConversationHandler.END
@@ -290,14 +316,14 @@ async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sku = update.message.text.replace("/buy_", "").strip()
     p = get_product(sku)
     if not p:
-        await update.message.reply_text("محصول مورد نظر یافت نشد یا غیرفعال است.", reply_markup=main_kb(uid))
+        await update.message.reply_text("عطر انتخاب شده یافت نشد.", reply_markup=main_kb(uid))
         return ConversationHandler.END
 
     context.user_data["buy_p"] = p
     await update.message.reply_text(
         f"🌸 انتخاب شما: {p.get('product_name')}\n"
         f"💰 قیمت واحد: {fmt_price(p.get('price_toman'))}\n\n"
-        "تعداد درخواستی خود را فقط به صورت عدد بفرستید:",
+        "تعداد درخواستی خود را فقط با رقم (عدد انگلیسی یا فارسی) ارسال کنید:",
         reply_markup=cancel_kb()
     )
     return BUY_QTY
@@ -308,7 +334,7 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw = raw.replace(fa, en)
 
     if not raw.isdigit() or int(raw) <= 0:
-        await update.message.reply_text("لطفاً فقط یک عدد معتبر بزرگتر از صفر وارد کنید:")
+        await update.message.reply_text("لطفاً یک عدد معتبر ارسال کنید:")
         return BUY_QTY
 
     qty = int(raw)
@@ -319,12 +345,12 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["buy_total"] = total
 
     msg = (
-        f"🧾 **پیش‌فاکتور خرید:**\n\n"
-        f"🌸 نام عطر: {p.get('product_name')}\n"
+        f"🧾 **پیش‌فاکتور سفارش:**\n\n"
+        f"🌸 محصول: {p.get('product_name')}\n"
         f"📦 تعداد: {qty} عدد\n"
-        f"💳 مبلغ قابل پرداخت: **{fmt_price(total)}**\n\n"
+        f"💳 کل مبلغ پرداختی: **{fmt_price(total)}**\n\n"
         f"شماره کارت فروشگاه:\n`{CARD_NUMBER}`\n{CARD_HOLDER}\n\n"
-        "📸 **مرحله پایانی:** لطفاً پس از واریز، **عکس فیش پرداخت** را همین الان بفرستید:"
+        "📸 **مرحله آخر:** لطفاً عکس فیش واریز را همین‌جا ارسال نمایید:"
     )
     await update.message.reply_text(msg, reply_markup=cancel_kb(), parse_mode="Markdown")
     return BUY_RECEIPT
@@ -332,7 +358,7 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buy_receipt_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not update.message.photo:
-        await update.message.reply_text("⚠️ لطفاً تصویر فیش واریز را ارسال کنید، یا دکمه «❌ انصراف» را بزنید:")
+        await update.message.reply_text("لطفاً عکس فیش را بفرستید، یا دکمه «❌ انصراف» را بزنید:")
         return BUY_RECEIPT
 
     receipt_file_id = update.message.photo[-1].file_id
@@ -355,20 +381,19 @@ async def buy_receipt_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        f"✅ سفارش شماره #{order_id} با موفقیت ثبت شد!\n"
-        "فیش واریزی برای مدیریت ارسال گردید و پس از تأیید، سفارش ارسال خواهد شد.",
+        f"✅ سفارش شما با کد پیگیری #{order_id} ثبت شد!\n"
+        "فیش واریزی برای بررسی ارسال گردید.",
         reply_markup=main_kb(uid)
     )
 
-    # ارسال مستقیم تصویر فیش + فاکتور برای آرمین (ادمین)
     admin_caption = (
-        f"🚨 **سفارش جدید ثبت شد! (# {order_id})**\n\n"
-        f"👤 مشتری: {prof.get('full_name')} (@{update.effective_user.username or 'بدون آیدی'})\n"
+        f"🚨 **سفارش جدید دریافت شد! (# {order_id})**\n\n"
+        f"👤 مشتری: {prof.get('full_name')} (@{update.effective_user.username or 'ندارد'})\n"
         f"📞 تماس: `{prof.get('phone')}`\n"
         f"📍 آدرس: {prof.get('address')}\n\n"
         f"🌸 عطر: {p.get('product_name')}\n"
         f"📦 تعداد: {qty} عدد\n"
-        f"💰 مبلغ کل: {fmt_price(total)}"
+        f"💰 مبلغ واریز: {fmt_price(total)}"
     )
     try:
         await context.bot.send_photo(
@@ -378,17 +403,17 @@ async def buy_receipt_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
     except Exception as e:
-        logging.error(f"Failed to send order notification to admin: {e}")
+        logging.error(f"Error forwarding receipt to admin: {e}")
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("❌ عملیات لغو شد.", reply_markup=main_kb(update.effective_user.id))
+    await update.message.reply_text("❌ عملیات لغو گردید.", reply_markup=main_kb(update.effective_user.id))
     return ConversationHandler.END
 
-# ----------------- بخش ادمین: اکسل و دریافت شناسه عکس -----------------
+# ----------------- بخش ادمین -----------------
 ADMIN_EXCEL_WAIT = 30
 ADMIN_PHOTO_WAIT = 31
 
@@ -401,7 +426,7 @@ async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
 
     if df.empty:
-        await update.message.reply_text("هنوز هیچ سفارشی در دیتابیس ثبت نشده است.")
+        await update.message.reply_text("هیچ سفارشی در دیتابیس ثبت نشده است.")
         return
 
     buf = io.BytesIO()
@@ -410,14 +435,14 @@ async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_document(
         document=buf,
         filename=f"orders_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        caption="📊 گزارش کلیه سفارشات ثبت شده مشتریان"
+        caption="📊 گزارش کلیه سفارشات ثبت‌شده"
     )
 
 async def admin_import_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
     await update.message.reply_text(
-        "لطفاً فایل اکسل بروزرسانی شده محصولات (`products.xlsx`) را ارسال کنید:",
+        "لطفاً فایل جدید اکسل محصولات (`products.xlsx`) را به صورت فایل ارسال کنید:",
         reply_markup=cancel_kb()
     )
     return ADMIN_EXCEL_WAIT
@@ -425,7 +450,7 @@ async def admin_import_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def admin_import_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc or not doc.file_name.endswith((".xlsx", ".xls")):
-        await update.message.reply_text("فایل ارسالی نامعتبر است. لطفاً فایل اکسل (.xlsx) ارسال فرمایید:")
+        await update.message.reply_text("لطفاً یک فایل معتبر اکسل (.xlsx) ارسال فرمایید:")
         return ADMIN_EXCEL_WAIT
 
     file_obj = await context.bot.get_file(doc.file_id)
@@ -437,7 +462,7 @@ async def admin_photo_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
     await update.message.reply_text(
-        "عکس مورد نظر برای محصول را ارسال فرمایید تا شناسه `photo_file_id` آن تقدیم شود:",
+        "عکس مورد نظر محصول را ارسال فرمایید تا شناسه `photo_file_id` تولید شود:",
         reply_markup=cancel_kb()
     )
     return ADMIN_PHOTO_WAIT
@@ -451,7 +476,7 @@ async def admin_photo_receive(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     return ConversationHandler.END
 
-# ----------------- دکمه‌ها و متن‌های عمومی -----------------
+# ----------------- دکمه‌ها و متن‌ها -----------------
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip()
     uid = update.effective_user.id
@@ -524,7 +549,6 @@ def main():
     db_setup()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ویرایش مشخصات کاربر
     prof_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^✏️ ویرایش مشخصات$"), profile_edit_start)],
         states={
@@ -535,7 +559,6 @@ def main():
         fallbacks=[MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel_flow)]
     )
 
-    # فرآیند خرید، تعیین تعداد و آپلود فیش
     buy_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^/buy_"), buy_start)],
         states={
@@ -545,7 +568,6 @@ def main():
         fallbacks=[MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel_flow)]
     )
 
-    # آپلود اکسل توسط ادمین
     excel_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^📥 بروزرسانی فایل محصولات$"), admin_import_start)],
         states={
@@ -554,7 +576,6 @@ def main():
         fallbacks=[MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel_flow)]
     )
 
-    # دریافت شناسه عکس فقط با کلیک دکمه توسط ادمین
     photo_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^🖼 دریافت شناسه عکس محصول$"), admin_photo_start)],
         states={
