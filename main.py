@@ -60,8 +60,11 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     if DATABASE_URL:
+        # پاک کردن جدول‌های قدیمی برای اعمال ساختار جدید (فقط این نسخه یک بار اجرا می‌شود)
+        c.execute("DROP TABLE IF EXISTS orders CASCADE;")
+        c.execute("DROP TABLE IF EXISTS users CASCADE;")
         c.execute("""
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE users (
                 user_id BIGINT PRIMARY KEY,
                 name TEXT,
                 phone TEXT,
@@ -70,7 +73,7 @@ def init_db():
             );
         """)
         c.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
+            CREATE TABLE orders (
                 order_id INTEGER PRIMARY KEY,
                 user_id BIGINT,
                 name TEXT,
@@ -367,8 +370,9 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
     action, order_id = data.rsplit("_", 1)
-    status_text = "تایید شد ✅" if "approve" in action else "رد شد ❌"
-    db_status = "تایید شده" if "approve" in action else "رد شده"
+    is_approve = "approve" in action
+    status_text = "تایید شد ✅" if is_approve else "رد شد ❌"
+    db_status = "تایید شده" if is_approve else "رد شده"
 
     conn = get_db_connection()
     c = conn.cursor()
@@ -390,7 +394,11 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if row:
         target_user_id = row[0]
-        msg = f"سفارش شماره #{order_id} شما تایید شد و به زودی ارسال می‌شود. 🚀" if "approve" in action else f"متاسفانه فیش واریزی سفارش شماره #{order_id} تایید نشد."
+        msg = (
+            f"سفارش شماره #{order_id} شما تایید شد و به زودی ارسال می‌شود. 🚀"
+            if is_approve
+            else f"متاسفانه فیش واریزی سفارش شماره #{order_id} تایید نشد."
+        )
         try:
             await context.bot.send_message(chat_id=target_user_id, text=msg)
         except Exception as e:
@@ -399,7 +407,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------------ پنل ادمین (لیست کاربران و سفارش‌ها) ------------------
 async def show_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش لیست کاربران ثبت‌نامی به صورت پیام متنی در تلگرام (دقیقاً مثل قبل)"""
+    """نمایش لیست کاربران ثبت‌نامی به صورت پیام متنی در تلگرام"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔️ دسترسی فقط برای ادمین مجاز است.")
         return
@@ -414,11 +422,11 @@ async def show_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("هیچ کاربری تا کنون ثبت‌نام نکرده است.")
         return
 
-    text = f"👥 **لیست کاربران ثبت‌نام شده ({len(users)} نفر):**\n\n"
+    text = f"👥 لیست کاربران ثبت‌نام شده ({len(users)} نفر):\n\n"
     for idx, u in enumerate(users, 1):
         uid, name, phone, addr, created_at = u
         text += (
-            f"{idx}. **{name}**\n"
+            f"{idx}. نام: {name}\n"
             f"   🆔 آیدی: `{uid}`\n"
             f"   📞 تلفن: `{phone}`\n"
             f"   📍 آدرس: {addr}\n"
@@ -426,7 +434,6 @@ async def show_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"-------------------------\n"
         )
 
-    # اگر لیست خیلی بلند بود تلگرام خطا نده
     if len(text) > 4000:
         for chunk in [text[i:i + 4000] for i in range(0, len(text), 4000)]:
             await update.message.reply_text(chunk, parse_mode="Markdown")
