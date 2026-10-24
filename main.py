@@ -1,10 +1,7 @@
 # main.py — فروشگاه عطر آرمین 🌸
-# python-telegram-bot v20+ (Render Webhook)
-
 import os
 import logging
 from datetime import datetime
-
 import pytz
 import pandas as pd
 from dotenv import load_dotenv
@@ -15,12 +12,10 @@ from telegram.ext import (
     ConversationHandler, ContextTypes, filters
 )
 
-# ----------------------------- Config -----------------------------
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT-YOUR-TOKEN-HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "93543054"))
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 EXCEL_FILE = os.path.join(os.path.dirname(__file__), "products.xlsx")
 
@@ -29,12 +24,10 @@ CARD_NUMBER = "6037-9975-1234-5678"
 CARD_HOLDER = "بانک ملی - به نام آرمین"
 SHOP_NAME = "🌸 فروشگاه عطر آرمین 🌸"
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# ----------------------------- Database -----------------------------
+# ----------------- دیتابیس -----------------
 import sqlite3
 
 def get_conn():
@@ -47,42 +40,34 @@ def db_setup():
     conn, kind = get_conn()
     cur = conn.cursor()
     if kind == "pg":
-        # 1. ساخت جدول اولیه در صورت نبودن
+        # حذف جدول قبلی برای ریست کامل و رفع قطعی ارور ستون‌ها
+        cur.execute("DROP TABLE IF EXISTS orders CASCADE;")
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL
+            CREATE TABLE orders (
+                order_id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                sku TEXT,
+                product_name TEXT,
+                qty INT DEFAULT 1,
+                price_toman BIGINT DEFAULT 0,
+                status TEXT DEFAULT 'در انتظار پرداخت',
+                created_at TIMESTAMPTZ DEFAULT now()
             );
         """)
-        # 2. حل خطای ستون‌ها: اضافه کردن خودکار تمام ستون‌های لازم به جدول رندر
-        columns_to_ensure = [
-            ("username", "TEXT"),
-            ("sku", "TEXT"),
-            ("product_name", "TEXT"),
-            ("qty", "INT DEFAULT 1"),
-            ("price_toman", "BIGINT DEFAULT 0"),
-            ("status", "TEXT DEFAULT 'در انتظار پرداخت'"),
-            ("created_at", "TIMESTAMPTZ DEFAULT now()")
-        ]
-        for col_name, col_type in columns_to_ensure:
-            cur.execute(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
-        
-        # اطمینان از مقداردهی پیش‌فرض sequence برای order_id
-        cur.execute("CREATE SEQUENCE IF NOT EXISTS orders_order_id_seq;")
-        cur.execute("ALTER TABLE orders ALTER COLUMN order_id SET DEFAULT nextval('orders_order_id_seq');")
-        cur.execute("SELECT setval('orders_order_id_seq', COALESCE((SELECT MAX(order_id) FROM orders), 1));")
     else:
+        cur.execute("DROP TABLE IF EXISTS orders;")
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                order_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id      INTEGER NOT NULL,
-                username     TEXT,
-                sku          TEXT NOT NULL,
+            CREATE TABLE orders (
+                order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                sku TEXT,
                 product_name TEXT,
-                qty          INTEGER NOT NULL DEFAULT 1,
-                price_toman  INTEGER,
-                status       TEXT NOT NULL DEFAULT 'در انتظار پرداخت',
-                created_at   TEXT NOT NULL
+                qty INTEGER DEFAULT 1,
+                price_toman INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'در انتظار پرداخت',
+                created_at TEXT
             );
         """)
     conn.commit()
@@ -97,14 +82,14 @@ def record_order(user_id, username, sku, product_name, qty, price_toman):
         cur.execute(
             """INSERT INTO orders (user_id, username, sku, product_name, qty, price_toman)
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING order_id;""",
-            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price),
+            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price)
         )
         order_id = cur.fetchone()[0]
     else:
         cur.execute(
             """INSERT INTO orders (user_id, username, sku, product_name, qty, price_toman, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?);""",
-            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price, datetime.now(TEHRAN).isoformat()),
+            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price, datetime.now(TEHRAN).isoformat())
         )
         order_id = cur.lastrowid
     conn.commit()
@@ -112,34 +97,21 @@ def record_order(user_id, username, sku, product_name, qty, price_toman):
     conn.close()
     return order_id
 
-def fetch_orders(limit=50):
-    conn, kind = get_conn()
-    cur = conn.cursor()
-    cur.execute(f"SELECT * FROM orders ORDER BY order_id DESC LIMIT {int(limit)};")
-    rows = cur.fetchall()
-    cols = [d[0] for d in cur.description]
-    cur.close()
-    conn.close()
-    return [dict(zip(cols, r)) for r in rows]
-
-# ----------------------------- Excel Products -----------------------------
-def get_products(only_active=True):
+# ----------------- اکسل محصولات -----------------
+def get_products():
     if not os.path.exists(EXCEL_FILE):
         return []
     df = pd.read_excel(EXCEL_FILE)
     df.columns = [str(c).strip().lower() for c in df.columns]
-    required = ["sku", "product_name", "brand", "volume_ml", "price_toman",
-                "stock_qty", "active", "tags", "description", "photo_file_id"]
-    for col in required:
-        if col not in df.columns:
-            df[col] = None
-    if only_active:
-        df = df[df["active"].astype(str).str.lower().isin(["true", "1", "yes", "فعال", "بله"])]
+    for c in ["sku", "product_name", "brand", "volume_ml", "price_toman", "stock_qty", "active", "tags", "description", "photo_file_id"]:
+        if c not in df.columns:
+            df[c] = None
+    df = df[df["active"].astype(str).str.lower().isin(["true", "1", "yes", "فعال", "بله"])]
     df = df.dropna(subset=["sku", "product_name"])
     return df.to_dict("records")
 
-def get_product_by_sku(sku):
-    for p in get_products(only_active=False):
+def get_product(sku):
+    for p in get_products():
         if str(p.get("sku")).strip() == str(sku).strip():
             return p
     return None
@@ -147,243 +119,136 @@ def get_product_by_sku(sku):
 def fmt_price(v):
     try:
         return f"{int(float(v)):,} تومان"
-    except (TypeError, ValueError):
+    except:
         return "نامشخص"
 
-# ----------------------------- Keyboards -----------------------------
-def main_menu():
-    kb = [
-        ["🛍 مشاهده محصولات", "🧾 پیگیری سفارش"],
-        ["💳 اطلاعات پرداخت", "📞 پشتیبانی"]
-    ]
-    return ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
-# ----------------------------- Handlers -----------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.effective_user.first_name or "عزیز"
-    await update.message.reply_text(
-        f"سلام {user_name} خوش آمدید! 👋\n"
-        f"به {SHOP_NAME} خوش آمدید.\n\n"
-        "از منوی زیر استفاده کنید:",
-        reply_markup=main_menu(),
+# ----------------- کیبورد و منو -----------------
+def main_kb():
+    return ReplyKeyboardMarkup(
+        [["🛍 مشاهده محصولات", "🧾 پیگیری سفارش"], ["💳 اطلاعات پرداخت", "📞 پشتیبانی"]],
+        resize_keyboard=True
     )
 
-async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"سلام خوش آمدید به {SHOP_NAME} 🌸", reply_markup=main_kb())
 
-    if text == "🛍 مشاهده محصولات":
-        products = get_products()
-        if not products:
-            await update.message.reply_text("فعلاً محصولی در انبار تعریف نشده یا موجود نیست. 🙏")
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").strip()
+    
+    if txt == "🛍 مشاهده محصولات":
+        prods = get_products()
+        if not prods:
+            await update.message.reply_text("هیچ عطری در سیستم ثبت نشده است.")
             return
-
-        for p in products[:25]:
+        for p in prods:
             caption = (
                 f"🌸 {p.get('product_name')}\n"
                 f"🏷 برند: {p.get('brand') or '—'}\n"
                 f"💧 حجم: {p.get('volume_ml') or '—'} میل\n"
                 f"💰 قیمت: {fmt_price(p.get('price_toman'))}\n"
-                f"📦 موجودی انبار: {p.get('stock_qty') or 0} عدد\n"
-                f"✨ رایحه و مشخصات: {p.get('tags') or '—'}\n\n"
-                f"📝 {p.get('description') or ''}\n\n"
-                f"🛒 ثبت سفارش: /buy_{p.get('sku')}"
+                f"📦 موجودی: {p.get('stock_qty') or 0} عدد\n"
+                f"📝 توضیحات: {p.get('description') or '—'}\n\n"
+                f"خرید این عطر: /buy_{p.get('sku')}"
             )
             photo = str(p.get("photo_file_id") or "").strip()
-            if photo and photo.lower() not in ["nan", "none"]:
+            if photo and photo.lower() not in ["none", "nan"]:
                 try:
                     await update.message.reply_photo(photo, caption=caption)
-                except Exception:
-                    await update.message.reply_text(caption)
-            else:
-                await update.message.reply_text(caption)
+                    continue
+                except:
+                    pass
+            await update.message.reply_text(caption)
 
-    elif text == "🧾 پیگیری سفارش":
-        user_orders = [o for o in fetch_orders(100) if o.get("user_id") == update.effective_user.id]
-        if not user_orders:
-            await update.message.reply_text("شما هنوز هیچ سفارشی ثبت نکرده‌اید.")
+    elif txt == "🧾 پیگیری سفارش":
+        conn, kind = get_conn()
+        cur = conn.cursor()
+        query = (
+            "SELECT order_id, product_name, qty, price_toman, status FROM orders WHERE user_id = %s ORDER BY order_id DESC LIMIT 5;"
+            if kind == "pg" else
+            "SELECT order_id, product_name, qty, price_toman, status FROM orders WHERE user_id = ? ORDER BY order_id DESC LIMIT 5;"
+        )
+        cur.execute(query, (update.effective_user.id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text("شما هنوز سفارشی ثبت نکرده‌اید.")
             return
 
-        lines = ["📋 آخرین سفارش‌های شما:\n"]
-        for o in user_orders[:10]:
-            p_price = fmt_price(o.get('price_toman'))
-            lines.append(
-                f"🧾 شماره سفارش: #{o.get('order_id')}\n"
-                f"🛍 محصول: {o.get('product_name') or o.get('sku')}\n"
-                f"🔢 تعداد: {o.get('qty')} عدد | مبلغ: {p_price}\n"
-                f"📌 وضعیت: {o.get('status')}\n"
-                f"──────────────"
-            )
-        await update.message.reply_text("\n".join(lines))
+        msg = "📋 سفارش‌های اخیر شما:\n\n"
+        for r in rows:
+            msg += f"شماره سفارش #{r[0]}: {r[1]} ({r[2]} عدد) - {fmt_price(r[3])} | وضعیت: {r[4]}\n"
+        await update.message.reply_text(msg)
 
-    elif text == "💳 اطلاعات پرداخت":
-        await update.message.reply_text(
-            f"💳 شماره کارت جهت پرداخت:\n`{CARD_NUMBER}`\n"
-            f"👤 صاحب حساب: {CARD_HOLDER}\n\n"
-            "لطفاً پس از واریز، تصویر فیش را ارسال فرمایید."
-        )
+    elif txt == "💳 اطلاعات پرداخت":
+        await update.message.reply_text(f"شماره کارت:\n`{CARD_NUMBER}`\n{CARD_HOLDER}")
 
-    elif text == "📞 پشتیبانی":
-        await update.message.reply_text("جهت پشتیبانی:\n@Armin (یا ارسال پیام به ادمین)")
+    elif txt == "📞 پشتیبانی":
+        await update.message.reply_text("جهت پشتیبانی با ادمین در ارتباط باشید: @Armin")
 
-# ----------------------------- Buy Flow -----------------------------
+# ----------------- جریان خرید (Conversation) -----------------
 BUY_QTY = 1
 
 async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    sku = text.replace("/buy_", "").strip()
-    p = get_product_by_sku(sku)
+    sku = update.message.text.replace("/buy_", "").strip()
+    p = get_product(sku)
     if not p:
-        await update.message.reply_text("محصول مورد نظر یافت نشد.")
+        await update.message.reply_text("این محصول یافت نشد.")
         return ConversationHandler.END
-
-    try:
-        stock = int(float(p.get("stock_qty") or 0))
-    except (TypeError, ValueError):
-        stock = 0
-
-    if stock <= 0:
-        await update.message.reply_text("متأسفانه موجودی این محصول در انبار به اتمام رسیده است.")
-        return ConversationHandler.END
-
-    context.user_data["product"] = p
-    await update.message.reply_text(
-        f"شما در حال خرید «{p.get('product_name')}» هستید.\n"
-        f"موجودی انبار: {stock} عدد\n\n"
-        "لطفاً تعداد درخواستی خود را به عدد (مثلاً 1) ارسال کنید:"
-    )
+    context.user_data["p"] = p
+    await update.message.reply_text(f"چند عدد «{p.get('product_name')}» می‌خواهید؟ (فقط عدد ارسال کنید):")
     return BUY_QTY
 
-async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    p = context.user_data.get("product")
-    if not p:
-        await update.message.reply_text("خطایی در اطلاعات پیش آمد. مجدداً محصول را انتخاب کنید.")
-        return ConversationHandler.END
-
+async def buy_qty_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    p = context.user_data.get("p")
     try:
         qty = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("لطفاً تعداد را فقط به صورت عدد وارد کنید:")
+    except:
+        await update.message.reply_text("لطفاً یک عدد معتبر ارسال کنید:")
         return BUY_QTY
 
-    stock = int(float(p.get("stock_qty") or 0))
-    if qty < 1 or qty > stock:
-        await update.message.reply_text(f"تعداد نامعتبر است. می‌توانید بین ۱ تا {stock} عدد انتخاب کنید:")
-        return BUY_QTY
-
-    price = p.get("price_toman") or 0
-    total = int(float(price)) * qty
-
-    order_id = record_order(
-        user_id=update.effective_user.id,
-        username=update.effective_user.username or update.effective_user.first_name,
-        sku=p["sku"],
-        product_name=p.get("product_name"),
-        qty=qty,
-        price_toman=total,
+    total = int(float(p.get("price_toman") or 0)) * qty
+    oid = record_order(
+        update.effective_user.id,
+        update.effective_user.username,
+        p["sku"],
+        p.get("product_name"),
+        qty,
+        total
     )
-
+    
     await update.message.reply_text(
-        f"🎉 سفارش شما با موفقیت ثبت شد!\n\n"
-        f"🧾 شماره پیگیری: #{order_id}\n"
-        f"🛍 عطر: {p.get('product_name')}\n"
-        f"🔢 تعداد: {qty} عدد\n"
-        f"💵 مبلغ کل: {fmt_price(total)}\n\n"
-        f"💳 شماره کارت جهت واریز:\n`{CARD_NUMBER}`\n"
-        f"👤 {CARD_HOLDER}\n\n"
-        "لطفاً فیش واریزی را برای پشتیبانی ارسال فرمایید.",
-        reply_markup=main_menu(),
+        f"✅ سفارش #{oid} ثبت شد!\n"
+        f"مبلغ کل: {fmt_price(total)}\n\n"
+        f"کارت: `{CARD_NUMBER}` ({CARD_HOLDER})\n"
+        "فیش واریزی را برای پشتیبانی ارسال فرمایید.",
+        reply_markup=main_kb()
     )
-
-    try:
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🔔 سفارش جدید ثبت شد!\n"
-            f"شماره سفارش: #{order_id}\n"
-            f"کاربر: @{update.effective_user.username} (آیدی: {update.effective_user.id})\n"
-            f"عطر: {p.get('product_name')} ({p.get('sku')})\n"
-            f"تعداد: {qty} عدد\n"
-            f"مبلغ کل: {fmt_price(total)}"
-        )
-    except Exception as e:
-        logging.warning(f"Could not alert admin: {e}")
-
     context.user_data.clear()
     return ConversationHandler.END
 
-# ----------------------------- Admin Tools -----------------------------
-async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------- ابزار ادمین برای دریافت عکس -----------------
+async def get_photo_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_text(
-        "📸 عکس عطر را همینجا بفرست تا file_id آن را برای اکسل دریافت کنی."
-    )
+    fid = update.message.photo[-1].file_id
+    await update.message.reply_text(f"شناسه عکس شما:\n\n`{fid}`", parse_mode="Markdown")
 
-async def catch_photo_for_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    msg = update.message
-    if not msg:
-        return
-
-    fid = None
-    if msg.photo:
-        fid = msg.photo[-1].file_id
-    elif msg.reply_to_message and msg.reply_to_message.photo:
-        fid = msg.reply_to_message.photo[-1].file_id
-
-    if fid:
-        await msg.reply_text(
-            f"✅ شناسه عکس (photo_file_id):\n\n`{fid}`\n\n"
-            "روی متن بالا بزن کپی بشه، بذار تو ستون photo_file_id اکسل.",
-            parse_mode="Markdown"
-        )
-
-async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    orders = fetch_orders(100)
-    if not orders:
-        await update.message.reply_text("هیچ سفارشی ثبت نشده است.")
-        return
-    df = pd.DataFrame(orders)
-    path = os.path.join(os.path.dirname(__file__), "orders_report.xlsx")
-    df.to_excel(path, index=False)
-    with open(path, "rb") as f:
-        await update.message.reply_document(f, filename="orders_report.xlsx", caption="گزارش سفارشات")
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("عملیات لغو شد.", reply_markup=main_menu())
-    return ConversationHandler.END
-
-# ----------------------------- Main -----------------------------
-def build_app() -> Application:
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    buy_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^/buy_"), buy_start)],
-        states={
-            BUY_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, buy_qty)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("getid", getid_command))
-    app.add_handler(CommandHandler("orders", admin_orders))
-    app.add_handler(buy_conv)
-
-    # هندل عکس برای file_id
-    app.add_handler(MessageHandler(filters.PHOTO, catch_photo_for_id))
-
-    # دکمه‌های متنی
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
-
-    return app
-
+# ----------------- اجرای ربات -----------------
 def main():
     db_setup()
-    app = build_app()
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^/buy_"), buy_start)],
+        states={BUY_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, buy_qty_step)]},
+        fallbacks=[]
+    )
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv)
+    app.add_handler(MessageHandler(filters.PHOTO, get_photo_id))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     port = int(os.getenv("PORT", "10000"))
     if os.getenv("RENDER"):
@@ -392,7 +257,7 @@ def main():
             listen="0.0.0.0",
             port=port,
             url_path="telegram",
-            webhook_url=f"https://{host}/telegram",
+            webhook_url=f"https://{host}/telegram"
         )
     else:
         app.run_polling()
