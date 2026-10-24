@@ -117,7 +117,7 @@ def init_db():
                     phone TEXT,
                     address TEXT,
                     postal_code TEXT,
-                    registered_at TIMESTAMP
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
             cur.execute("""
@@ -145,7 +145,7 @@ def init_db():
                     price_toman INTEGER,
                     receipt_file_id TEXT,
                     status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
 
@@ -176,14 +176,14 @@ def init_db():
         cur.close()
         conn.close()
 
-# استیت‌های مکالمه
+# استیت‌های گفتگو
 REG_NAME, REG_PHONE, REG_ADDRESS, REG_POSTAL = range(4)
 ORDER_RECEIPT = 4
 IMPORT_WAIT_FILE = 5
 
 ITEMS_PER_PAGE = 4
 
-# پترن‌های اعتبارسنجی
+# الگوهای اعتبارسنجی
 PHONE_REGEX = re.compile(r"^09\d{9}$")
 POSTAL_REGEX = re.compile(r"^\d{10}$")
 NAME_REGEX = re.compile(r"^[\u0600-\u06FFa-zA-Z\s\u200c]{2,50}$")
@@ -486,7 +486,7 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
     cur.close()
     conn.close()
 
-# ---------- ثبت‌نام با اعتبارسنجی کامل ----------
+# ---------- ثبت‌نام با اعتبارسنجی و ذخیره‌سازی قطعی ----------
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "لطفاً **نام و نام‌خانوادگی** خود را وارد فرمایید:\n"
@@ -498,13 +498,12 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def reg_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    # تبدیل ارقام فارسی به انگلیسی در صورت نیاز
     text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
 
     if not NAME_REGEX.match(text):
         await update.message.reply_text(
             "⚠️ نام وارد شده معتبر نیست!\n"
-            "لطفاً نام و نام‌خانوادگی را فقط با حروف (فارسی یا انگلیسی) وارد کنید:"
+            "لطفاً نام و نام‌خانوادگی را فقط با حروف وارد کنید:"
         )
         return REG_NAME
 
@@ -517,9 +516,8 @@ async def reg_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    # تبدیل ارقام فارسی/عربی به انگلیسی
     text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
-    text = re.sub(r"[\s\-]", "", text)  # حذف فاصله و خط تیره
+    text = re.sub(r"[\s\-]", "", text)
 
     if not PHONE_REGEX.match(text):
         await update.message.reply_text(
@@ -553,14 +551,14 @@ async def reg_get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+    text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
     text = re.sub(r"[\s\-]", "", text)
     user_id = update.effective_user.id
     is_admin = (user_id == ADMIN_ID)
 
     if not POSTAL_REGEX.match(text):
         await update.message.reply_text(
-            "⚠️ کدپستی معتبر نیست!\nکدپستی باید دقیقاً ۱۰ رقم باشد. دوباره وارد کنید:"
+            "⚠️ کدپستی معتبر نیست!\nکدپستی باید دقیقاً ۱۰ رقم عددی باشد. لطفاً دوباره وارد فرمایید:"
         )
         return REG_POSTAL
 
@@ -568,55 +566,54 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = context.user_data.get("reg_phone", "")
     addr = context.user_data.get("reg_address", "")
 
+    conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
         if IS_POSTGRES:
-            cur.execute("SELECT user_id FROM users WHERE user_id = %s;", (user_id,))
+            # استفاده از UPSERT استاندارد در PostgreSQL
+            cur.execute("""
+                INSERT INTO users (user_id, full_name, phone, address, postal_code, registered_at)
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    full_name = EXCLUDED.full_name,
+                    phone = EXCLUDED.phone,
+                    address = EXCLUDED.address,
+                    postal_code = EXCLUDED.postal_code,
+                    registered_at = CURRENT_TIMESTAMP;
+            """, (user_id, name, phone, addr, text))
         else:
-            cur.execute("SELECT user_id FROM users WHERE user_id = ?;", (user_id,))
-        existing = cur.fetchone()
-
-        if existing:
-            if IS_POSTGRES:
-                cur.execute("""
-                    UPDATE users
-                    SET full_name = %s, phone = %s, address = %s, postal_code = %s
-                    WHERE user_id = %s;
-                """, (name, phone, addr, text, user_id))
-            else:
-                cur.execute("""
-                    UPDATE users
-                    SET full_name = ?, phone = ?, address = ?, postal_code = ?
-                    WHERE user_id = ?;
-                """, (name, phone, addr, text, user_id))
-        else:
-            if IS_POSTGRES:
-                cur.execute("""
-                    INSERT INTO users (user_id, full_name, phone, address, postal_code)
-                    VALUES (%s, %s, %s, %s, %s);
-                """, (user_id, name, phone, addr, text))
-            else:
-                cur.execute("""
-                    INSERT INTO users (user_id, full_name, phone, address, postal_code)
-                    VALUES (?, ?, ?, ?, ?);
-                """, (user_id, name, phone, addr, text))
+            # استفاده از UPSERT در SQLite
+            cur.execute("""
+                INSERT INTO users (user_id, full_name, phone, address, postal_code, registered_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    full_name = excluded.full_name,
+                    phone = excluded.phone,
+                    address = excluded.address,
+                    postal_code = excluded.postal_code,
+                    registered_at = CURRENT_TIMESTAMP;
+            """, (user_id, name, phone, addr, text))
 
         conn.commit()
         cur.close()
-        conn.close()
 
         await update.message.reply_text(
             "🎉 مشخصات شما با موفقیت ثبت شد!\nهم‌اکنون می‌توانید عطر مورد نظر خود را سفارش دهید.",
             reply_markup=get_main_keyboard(is_admin)
         )
     except Exception as e:
-        logger.error(f"Error saving user profile: {e}")
+        logger.error(f"Error saving user profile: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
         await update.message.reply_text(
             "⚠️ در ذخیره‌سازی اطلاعات خطایی رخ داد، لطفاً دوباره تلاش کنید.",
             reply_markup=get_main_keyboard(is_admin)
         )
+    finally:
+        if conn:
+            conn.close()
 
     context.user_data.clear()
     return ConversationHandler.END
