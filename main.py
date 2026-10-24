@@ -1,12 +1,13 @@
-# main.py — فروشگاه عطر آرمین 🌸
+# main.py — فروشگاه عطر آرمین 🌸 (نسخه حرفه‌ای و اصلاح‌شده پشتیبانی)
 import os
+import io
 import logging
 from datetime import datetime
 import pytz
 import pandas as pd
 from dotenv import load_dotenv
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
@@ -24,10 +25,13 @@ CARD_NUMBER = "6037-9975-1234-5678"
 CARD_HOLDER = "بانک ملی - به نام آرمین"
 SHOP_NAME = "🌸 فروشگاه عطر آرمین 🌸"
 
+# آیدی یا شماره پشتیبانی (بدون لینک تگ که نیاز به پریمیوم داشته باشد)
+SUPPORT_CONTACT = "@Armin_Support_Shop" # یا می‌توانی شماره تماس بگذاری
+
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# ----------------- دیتابیس -----------------
+# ----------------- دیتابیس (SQLite و PostgreSQL) -----------------
 import sqlite3
 
 def get_conn():
@@ -40,32 +44,56 @@ def db_setup():
     conn, kind = get_conn()
     cur = conn.cursor()
     if kind == "pg":
-        cur.execute("DROP TABLE IF EXISTS orders CASCADE;")
         cur.execute("""
-            CREATE TABLE orders (
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                phone TEXT,
+                address TEXT,
+                joined_at TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS orders (
                 order_id SERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
                 username TEXT,
+                full_name TEXT,
+                phone TEXT,
+                address TEXT,
                 sku TEXT,
                 product_name TEXT,
                 qty INT DEFAULT 1,
                 price_toman BIGINT DEFAULT 0,
-                status TEXT DEFAULT 'در انتظار پرداخت',
+                receipt_file_id TEXT,
+                status TEXT DEFAULT 'در انتظار تایید پرداخت',
                 created_at TIMESTAMPTZ DEFAULT now()
             );
         """)
     else:
-        cur.execute("DROP TABLE IF EXISTS orders;")
         cur.execute("""
-            CREATE TABLE orders (
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                phone TEXT,
+                address TEXT,
+                joined_at TEXT
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
                 order_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 username TEXT,
+                full_name TEXT,
+                phone TEXT,
+                address TEXT,
                 sku TEXT,
                 product_name TEXT,
                 qty INTEGER DEFAULT 1,
                 price_toman INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'در انتظار پرداخت',
+                receipt_file_id TEXT,
+                status TEXT DEFAULT 'در انتظار تایید پرداخت',
                 created_at TEXT
             );
         """)
@@ -73,22 +101,67 @@ def db_setup():
     cur.close()
     conn.close()
 
-def record_order(user_id, username, sku, product_name, qty, price_toman):
+def get_user_profile(user_id):
+    conn, kind = get_conn()
+    cur = conn.cursor()
+    q = "SELECT user_id, username, full_name, phone, address FROM users WHERE user_id = %s" if kind == "pg" else "SELECT user_id, username, full_name, phone, address FROM users WHERE user_id = ?"
+    cur.execute(q, (user_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        return {"user_id": row[0], "username": row[1], "full_name": row[2], "phone": row[3], "address": row[4]}
+    return None
+
+def upsert_user(user_id, username, full_name=None, phone=None, address=None):
+    conn, kind = get_conn()
+    cur = conn.cursor()
+    exist = get_user_profile(user_id)
+    if not exist:
+        if kind == "pg":
+            cur.execute(
+                "INSERT INTO users (user_id, username, full_name, phone, address) VALUES (%s, %s, %s, %s, %s);",
+                (user_id, str(username or ""), full_name, phone, address)
+            )
+        else:
+            cur.execute(
+                "INSERT INTO users (user_id, username, full_name, phone, address, joined_at) VALUES (?, ?, ?, ?, ?, ?);",
+                (user_id, str(username or ""), full_name, phone, address, datetime.now(TEHRAN).isoformat())
+            )
+    else:
+        new_name = full_name if full_name is not None else exist["full_name"]
+        new_phone = phone if phone is not None else exist["phone"]
+        new_addr = address if address is not None else exist["address"]
+        if kind == "pg":
+            cur.execute(
+                "UPDATE users SET username=%s, full_name=%s, phone=%s, address=%s WHERE user_id=%s;",
+                (str(username or ""), new_name, new_phone, new_addr, user_id)
+            )
+        else:
+            cur.execute(
+                "UPDATE users SET username=?, full_name=?, phone=?, address=? WHERE user_id=?;",
+                (str(username or ""), new_name, new_phone, new_addr, user_id)
+            )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def record_order(user_id, username, full_name, phone, address, sku, product_name, qty, price_toman, receipt_file_id):
     conn, kind = get_conn()
     cur = conn.cursor()
     safe_price = int(float(price_toman or 0))
     if kind == "pg":
         cur.execute(
-            """INSERT INTO orders (user_id, username, sku, product_name, qty, price_toman)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING order_id;""",
-            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price)
+            """INSERT INTO orders (user_id, username, full_name, phone, address, sku, product_name, qty, price_toman, receipt_file_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING order_id;""",
+            (user_id, str(username or ""), full_name, phone, address, str(sku), str(product_name or ""), qty, safe_price, receipt_file_id)
         )
         order_id = cur.fetchone()[0]
     else:
         cur.execute(
-            """INSERT INTO orders (user_id, username, sku, product_name, qty, price_toman, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?);""",
-            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price, datetime.now(TEHRAN).isoformat())
+            """INSERT INTO orders (user_id, username, full_name, phone, address, sku, product_name, qty, price_toman, receipt_file_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+            (user_id, str(username or ""), full_name, phone, address, str(sku), str(product_name or ""), qty, safe_price, receipt_file_id, datetime.now(TEHRAN).isoformat())
         )
         order_id = cur.lastrowid
     conn.commit()
@@ -100,14 +173,18 @@ def record_order(user_id, username, sku, product_name, qty, price_toman):
 def get_products():
     if not os.path.exists(EXCEL_FILE):
         return []
-    df = pd.read_excel(EXCEL_FILE)
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    for c in ["sku", "product_name", "brand", "volume_ml", "price_toman", "stock_qty", "active", "tags", "description", "photo_file_id"]:
-        if c not in df.columns:
-            df[c] = None
-    df = df[df["active"].astype(str).str.lower().isin(["true", "1", "yes", "فعال", "بله"])]
-    df = df.dropna(subset=["sku", "product_name"])
-    return df.to_dict("records")
+    try:
+        df = pd.read_excel(EXCEL_FILE)
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        for c in ["sku", "product_name", "brand", "volume_ml", "price_toman", "stock_qty", "active", "tags", "description", "photo_file_id"]:
+            if c not in df.columns:
+                df[c] = None
+        df = df[df["active"].astype(str).str.lower().isin(["true", "1", "yes", "فعال", "بله"])]
+        df = df.dropna(subset=["sku", "product_name"])
+        return df.to_dict("records")
+    except Exception as e:
+        logging.error(f"Error reading products.xlsx: {e}")
+        return []
 
 def get_product(sku):
     for p in get_products():
@@ -121,19 +198,232 @@ def fmt_price(v):
     except:
         return "نامشخص"
 
-# ----------------- کیبورد و منو -----------------
-def main_kb():
-    return ReplyKeyboardMarkup(
-        [["🛍 مشاهده محصولات", "🧾 پیگیری سفارش"], ["💳 اطلاعات پرداخت", "📞 پشتیبانی"]],
-        resize_keyboard=True
+# ----------------- کیبوردها -----------------
+def main_kb(user_id: int):
+    base_menu = [
+        ["🛍 مشاهده محصولات", "🧾 پیگیری سفارش"],
+        ["👤 پروفایل من", "💳 اطلاعات پرداخت"],
+        ["📞 پشتیبانی"]
+    ]
+    if user_id == ADMIN_ID:
+        base_menu.append(["📊 خروجی اکسل سفارشات", "📥 بروزرسانی محصولات"])
+    return ReplyKeyboardMarkup(base_menu, resize_keyboard=True)
+
+def cancel_kb():
+    return ReplyKeyboardMarkup([["❌ انصراف"]], resize_keyboard=True)
+
+# ----------------- دستور /start -----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    uname = update.effective_user.username
+    upsert_user(uid, uname)
+    await update.message.reply_text(
+        f"سلام خوش آمدید به {SHOP_NAME} 🌸\nبرای خرید یا مشاهده، از منوی زیر استفاده کنید:",
+        reply_markup=main_kb(uid)
     )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"سلام خوش آمدید به {SHOP_NAME} 🌸", reply_markup=main_kb())
+# ----------------- ویرایش پروفایل (Conversation) -----------------
+PROF_NAME, PROF_PHONE, PROF_ADDR = range(10, 13)
 
+async def profile_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    prof = get_user_profile(uid)
+    fname = (prof and prof.get("full_name")) or "ثبت نشده"
+    phone = (prof and prof.get("phone")) or "ثبت نشده"
+    addr = (prof and prof.get("address")) or "ثبت نشده"
+
+    msg = (
+        "👤 **پروفایل کاربری شما:**\n\n"
+        f"👤 نام و نام خانوادگی: {fname}\n"
+        f"📞 شماره تماس: {phone}\n"
+        f"📍 آدرس ارسال: {addr}\n\n"
+        "برای ثبت یا ویرایش اطلاعات دکمه زیر را لمس کنید:"
+    )
+    kb = ReplyKeyboardMarkup([["✏️ ویرایش اطلاعات پروفایل"], ["🔙 بازگشت به منوی اصلی"]], resize_keyboard=True)
+    await update.message.reply_text(msg, reply_markup=kb, parse_mode="Markdown")
+
+async def profile_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("لطفاً **نام و نام خانوادگی** خود را وارد فرمایید:", reply_markup=cancel_kb())
+    return PROF_NAME
+
+async def profile_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["prof_name"] = update.message.text.strip()
+    await update.message.reply_text("لطفاً **شماره موبایل** خود را وارد فرمایید (مثال: 09123456789):", reply_markup=cancel_kb())
+    return PROF_PHONE
+
+async def profile_edit_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["prof_phone"] = update.message.text.strip()
+    await update.message.reply_text("لطفاً **آدرس دقیق پستی و کدپستی** خود را وارد فرمایید:", reply_markup=cancel_kb())
+    return PROF_ADDR
+
+async def profile_edit_addr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    addr = update.message.text.strip()
+    uid = update.effective_user.id
+    upsert_user(
+        uid,
+        update.effective_user.username,
+        full_name=context.user_data.get("prof_name"),
+        phone=context.user_data.get("prof_phone"),
+        address=addr
+    )
+    context.user_data.clear()
+    await update.message.reply_text("✅ اطلاعات پروفایل شما با موفقیت ثبت شد.", reply_markup=main_kb(uid))
+    return ConversationHandler.END
+
+# ----------------- فرآیند سفارش کامل (Conversation) -----------------
+BUY_QTY, BUY_RECEIPT = range(20, 22)
+
+async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    prof = get_user_profile(uid)
+    if not prof or not prof.get("full_name") or not prof.get("phone") or not prof.get("address"):
+        await update.message.reply_text(
+            "⚠️ برای ثبت سفارش، ابتدا باید آدرس و شماره تماس خود را در پروفایل تکمیل کنید.\n\n"
+            "لطفاً روی دکمه «👤 پروفایل من» کلیک کنید.",
+            reply_markup=main_kb(uid)
+        )
+        return ConversationHandler.END
+
+    sku = update.message.text.replace("/buy_", "").strip()
+    p = get_product(sku)
+    if not p:
+        await update.message.reply_text("این محصول در لیست فعال موجود نیست.", reply_markup=main_kb(uid))
+        return ConversationHandler.END
+
+    context.user_data["buy_p"] = p
+    await update.message.reply_text(
+        f"🌸 خرید عطر: {p.get('product_name')}\n"
+        f"قیمت هر واحد: {fmt_price(p.get('price_toman'))}\n\n"
+        "چند عدد می‌خواهید؟ (لطفاً فقط عدد ارسال کنید):",
+        reply_markup=cancel_kb()
+    )
+    return BUY_QTY
+
+async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip().replace("۰","0").replace("۱","1").replace("۲","2").replace("۳","3").replace("۴","4").replace("۵","5").replace("۶","6").replace("۷","7").replace("۸","8").replace("۹","9")
+    if not raw.isdigit() or int(raw) <= 0:
+        await update.message.reply_text("لطفاً یک عدد معتبر بزرگتر از صفر وارد کنید:")
+        return BUY_QTY
+
+    qty = int(raw)
+    p = context.user_data["buy_p"]
+    price = int(float(p.get("price_toman") or 0))
+    total = price * qty
+    context.user_data["buy_qty"] = qty
+    context.user_data["buy_total"] = total
+
+    msg = (
+        f"🧾 **پیش‌فاکتور خرید:**\n\n"
+        f"🌸 محصول: {p.get('product_name')}\n"
+        f"📦 تعداد: {qty} عدد\n"
+        f"💰 مبلغ نهایی: {fmt_price(total)}\n\n"
+        f"💳 شماره کارت جهت واریز:\n`{CARD_NUMBER}`\n{CARD_HOLDER}\n\n"
+        "📸 **لطفاً پس از واریز، عکس فیش پرداخت را همین‌جا ارسال کنید:**"
+    )
+    await update.message.reply_text(msg, reply_markup=cancel_kb(), parse_mode="Markdown")
+    return BUY_RECEIPT
+
+async def buy_receipt_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not update.message.photo:
+        await update.message.reply_text("لطفاً عکس فیش را ارسال کنید یا دکمه «❌ انصراف» را بزنید:")
+        return BUY_RECEIPT
+
+    receipt_id = update.message.photo[-1].file_id
+    p = context.user_data["buy_p"]
+    qty = context.user_data["buy_qty"]
+    total = context.user_data["buy_total"]
+    prof = get_user_profile(uid)
+
+    oid = record_order(
+        uid,
+        update.effective_user.username,
+        prof.get("full_name"),
+        prof.get("phone"),
+        prof.get("address"),
+        p["sku"],
+        p.get("product_name"),
+        qty,
+        total,
+        receipt_id
+    )
+
+    await update.message.reply_text(
+        f"✅ سفارش شماره #{oid} با موفقیت ثبت شد!\n"
+        "فیش واریزی شما برای مدیریت ارسال گردید و پس از بررسی، هماهنگی ارسال انجام خواهد شد.",
+        reply_markup=main_kb(uid)
+    )
+
+    admin_caption = (
+        f"🛍 **سفارش جدید دریافت شد! (#{oid})**\n\n"
+        f"👤 نام: {prof.get('full_name')} (@{update.effective_user.username or 'ندارد'})\n"
+        f"📞 تماس: {prof.get('phone')}\n"
+        f"📍 آدرس: {prof.get('address')}\n"
+        f"🌸 محصول: {p.get('product_name')} ({qty} عدد)\n"
+        f"💰 مبلغ: {fmt_price(total)}"
+    )
+    try:
+        await context.bot.send_photo(chat_id=ADMIN_ID, photo=receipt_id, caption=admin_caption, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Could not forward receipt to admin: {e}")
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("عملیات لغو شد.", reply_markup=main_kb(update.effective_user.id))
+    return ConversationHandler.END
+
+# ----------------- پنل مدیریت اکسل -----------------
+ADMIN_EXCEL_WAIT = 30
+
+async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    conn, kind = get_conn()
+    q = "SELECT order_id, user_id, username, full_name, phone, address, sku, product_name, qty, price_toman, status, created_at FROM orders ORDER BY order_id DESC;"
+    df = pd.read_sql_query(q, conn)
+    conn.close()
+
+    if df.empty:
+        await update.message.reply_text("هیچ سفارشی در دیتابیس ثبت نشده است.")
+        return
+
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    buf.seek(0)
+    await update.message.reply_document(
+        document=buf,
+        filename=f"orders_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        caption="📊 گزارش کامل سفارشات ثبت شده"
+    )
+
+async def admin_import_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text(
+        "لطفاً فایل اکسل جدید محصولات (`products.xlsx`) را به صورت File ارسال فرمایید:",
+        reply_markup=cancel_kb()
+    )
+    return ADMIN_EXCEL_WAIT
+
+async def admin_import_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    if not doc or not doc.file_name.endswith((".xlsx", ".xls")):
+        await update.message.reply_text("لطفاً یک فایل اکسل معتبر با فرمت xlsx ارسال کنید:")
+        return ADMIN_EXCEL_WAIT
+
+    file_obj = await context.bot.get_file(doc.file_id)
+    await file_obj.download_to_drive(EXCEL_FILE)
+    await update.message.reply_text("✅ فایل اکسل محصولات با موفقیت بروزرسانی شد!", reply_markup=main_kb(ADMIN_ID))
+    return ConversationHandler.END
+
+# ----------------- پیام‌های متنی عمومی -----------------
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip()
-    
+    uid = update.effective_user.id
+
     if txt == "🛍 مشاهده محصولات":
         prods = get_products()
         if not prods:
@@ -158,15 +448,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
             await update.message.reply_text(caption)
 
-    elif txt == "🧾 پیگیری سفارش":
+    elif txt in ["🧾 پیگیری سفارش"]:
         conn, kind = get_conn()
         cur = conn.cursor()
-        query = (
+        q = (
             "SELECT order_id, product_name, qty, price_toman, status FROM orders WHERE user_id = %s ORDER BY order_id DESC LIMIT 5;"
             if kind == "pg" else
             "SELECT order_id, product_name, qty, price_toman, status FROM orders WHERE user_id = ? ORDER BY order_id DESC LIMIT 5;"
         )
-        cur.execute(query, (update.effective_user.id,))
+        cur.execute(q, (uid,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -175,78 +465,74 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("شما هنوز سفارشی ثبت نکرده‌اید.")
             return
 
-        msg = "📋 سفارش‌های اخیر شما:\n\n"
+        msg = "📋 **سفارش‌های اخیر شما:**\n\n"
         for r in rows:
-            msg += f"شماره سفارش #{r[0]}: {r[1]} ({r[2]} عدد) - {fmt_price(r[3])} | وضعیت: {r[4]}\n"
-        await update.message.reply_text(msg)
+            msg += f"🔸 شماره سفارش #{r[0]}: {r[1]} ({r[2]} عدد) - {fmt_price(r[3])}\nوضعیت: `{r[4]}`\n\n"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
+    elif txt == "👤 پروفایل من":
+        await profile_view(update, context)
+
+    elif txt == "🔙 بازگشت به منوی اصلی":
+        await update.message.reply_text("منوی اصلی:", reply_markup=main_kb(uid))
 
     elif txt == "💳 اطلاعات پرداخت":
-        await update.message.reply_text(f"شماره کارت:\n`{CARD_NUMBER}`\n{CARD_HOLDER}")
+        await update.message.reply_text(f"💳 شماره کارت جهت واریز:\n`{CARD_NUMBER}`\n{CARD_HOLDER}", parse_mode="Markdown")
 
     elif txt == "📞 پشتیبانی":
-        await update.message.reply_text("جهت پشتیبانی با ادمین در ارتباط باشید: @Armin")
+        # پشتیبانی متن ساده بدون ایجاد لینک اجباری تلگرام پریمیوم
+        await update.message.reply_text(
+            f"📞 **ارتباط با پشتیبانی فروشگاه عطر آرمین:**\n\n"
+            f"جهت پیگیری سفارشات یا راهنمایی می‌توانید به پشتیبانی پیام دهید:\n"
+            f"🆔 نام کاربری پشتیبانی: `{SUPPORT_CONTACT}`"
+        )
 
-# ----------------- جریان خرید (Conversation) -----------------
-BUY_QTY = 1
-
-async def buy_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sku = update.message.text.replace("/buy_", "").strip()
-    p = get_product(sku)
-    if not p:
-        await update.message.reply_text("این محصول یافت نشد.")
-        return ConversationHandler.END
-    context.user_data["p"] = p
-    await update.message.reply_text(f"چند عدد «{p.get('product_name')}» می‌خواهید؟ (فقط عدد ارسال کنید):")
-    return BUY_QTY
-
-async def buy_qty_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    p = context.user_data.get("p")
-    try:
-        qty = int(update.message.text.strip())
-    except:
-        await update.message.reply_text("لطفاً یک عدد معتبر ارسال کنید:")
-        return BUY_QTY
-
-    total = int(float(p.get("price_toman") or 0)) * qty
-    oid = record_order(
-        update.effective_user.id,
-        update.effective_user.username,
-        p["sku"],
-        p.get("product_name"),
-        qty,
-        total
-    )
-    
-    await update.message.reply_text(
-        f"✅ سفارش #{oid} ثبت شد!\n"
-        f"مبلغ کل: {fmt_price(total)}\n\n"
-        f"کارت: `{CARD_NUMBER}` ({CARD_HOLDER})\n"
-        "فیش واریزی را برای پشتیبانی ارسال فرمایید.",
-        reply_markup=main_kb()
-    )
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# ----------------- ابزار ادمین برای دریافت عکس -----------------
-async def get_photo_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_photo_helper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     fid = update.message.photo[-1].file_id
-    await update.message.reply_text(f"شناسه عکس شما:\n\n`{fid}`", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"🖼 **شناسه عکس برای درج در ستون photo_file_id اکسل:**\n\n`{fid}`",
+        parse_mode="Markdown"
+    )
 
-# ----------------- اجرای ربات -----------------
 def main():
     db_setup()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r"^/buy_"), buy_start)],
-        states={BUY_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, buy_qty_step)]},
-        fallbacks=[]
+    prof_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^✏️ ویرایش اطلاعات پروفایل$"), profile_edit_start)],
+        states={
+            PROF_NAME: [MessageHandler(filters.TEXT & ~filters.Regex(r"^❌ انصراف$"), profile_edit_name)],
+            PROF_PHONE: [MessageHandler(filters.TEXT & ~filters.Regex(r"^❌ انصراف$"), profile_edit_phone)],
+            PROF_ADDR: [MessageHandler(filters.TEXT & ~filters.Regex(r"^❌ انصراف$"), profile_edit_addr)],
+        },
+        fallbacks=[MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel_flow)]
     )
+
+    buy_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^/buy_"), buy_start)],
+        states={
+            BUY_QTY: [MessageHandler(filters.TEXT & ~filters.Regex(r"^❌ انصراف$"), buy_qty)],
+            BUY_RECEIPT: [MessageHandler(filters.PHOTO, buy_receipt_step)],
+        },
+        fallbacks=[MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel_flow)]
+    )
+
+    excel_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"^📥 بروزرسانی محصولات$"), admin_import_start)],
+        states={
+            ADMIN_EXCEL_WAIT: [MessageHandler(filters.Document.ALL & ~filters.Regex(r"^❌ انصراف$"), admin_import_file)]
+        },
+        fallbacks=[MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel_flow)]
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
-    app.add_handler(MessageHandler(filters.PHOTO, get_photo_id))
+    app.add_handler(prof_conv)
+    app.add_handler(buy_conv)
+    app.add_handler(excel_conv)
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 خروجی اکسل سفارشات$"), admin_export_excel))
+    app.add_handler(MessageHandler(filters.PHOTO, admin_photo_helper))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     port = int(os.getenv("PORT", "10000"))
