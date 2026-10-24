@@ -1,8 +1,7 @@
-﻿python-telegram-bot[webhooks]
+﻿python-telegram-bot
+psycopg2-binary
 pandas
 openpyxl
 python-dotenv
-psycopg2-binary
 jdatetime
 pytz
-SQLAlchemy
