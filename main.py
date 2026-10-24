@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -33,7 +34,7 @@ ADMIN_ID = 93543054
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# اطلاعات فروشگاه (بعداً می‌توانی عوضش کنی)
+# اطلاعات فروشگاه
 SHOP_NAME = "🌸 فروشگاه عطر آرمان 🌸"
 CARD_NUMBER = "6037-9975-1234-5678"   # شماره کارت فروشنده
 CARD_HOLDER = "بانک ملی - به نام آرمان"
@@ -62,29 +63,73 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            name TEXT,
-            phone TEXT,
-            address TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id BIGINT PRIMARY KEY,
-            user_id BIGINT,
-            perfume_name TEXT,
-            price BIGINT,
-            address TEXT,
-            phone TEXT,
-            receipt_file_id TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+
+    if DATABASE_URL:
+        # ساخت جدول‌ها برای PostgreSQL
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                name TEXT,
+                phone TEXT,
+                address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # اصلاح ستون‌ها در صورت وجود جدول قدیمی از پروژه‌های قبل
+        alter_cols = [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id BIGINT;",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"
+        ]
+        for q in alter_cols:
+            try:
+                cur.execute(q)
+            except Exception:
+                pass
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id BIGINT PRIMARY KEY,
+                user_id BIGINT,
+                perfume_name TEXT,
+                price BIGINT,
+                address TEXT,
+                phone TEXT,
+                receipt_file_id TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+    else:
+        # ساخت جدول‌ها برای SQLite محلی
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                name TEXT,
+                phone TEXT,
+                address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                perfume_name TEXT,
+                price INTEGER,
+                address TEXT,
+                phone TEXT,
+                receipt_file_id TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
     conn.commit()
     cur.close()
     conn.close()
