@@ -1,9 +1,8 @@
 ﻿python-telegram-bot[webhooks]
-python-dotenv
-psycopg2-binary
 pandas
 openpyxl
-groq
-matplotlib
-seaborn
-duckduckgo-search
+python-dotenv
+psycopg2-binary
+jdatetime
+pytz
+SQLAlchemy

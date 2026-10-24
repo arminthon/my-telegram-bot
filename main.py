@@ -23,6 +23,11 @@ from telegram.ext import (
     filters,
 )
 
+# New: timezone + jalali + sqlalchemy engine for pandas
+import pytz
+import jdatetime
+from sqlalchemy import create_engine
+
 # ------------------ تنظیمات ------------------
 load_dotenv()
 
@@ -31,6 +36,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 PORT = int(os.environ.get("PORT", "8443"))
 
+# Fix old Heroku-style URLs
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -49,11 +55,32 @@ REG_NAME, REG_PHONE, REG_ADDRESS = range(3)
 ORDER_ADDRESS, ORDER_PHONE, WAIT_RECEIPT = range(3, 6)
 
 
+# ------------------ ابزار زمان تهران و تاریخ شمسی ------------------
+def get_tehran_now_dt():
+    tehran_tz = pytz.timezone("Asia/Tehran")
+    return datetime.datetime.now(tehran_tz)
+
+
+def get_tehran_now_shamsi_str():
+    # خروجی نمونه: 1405/08/02 21:35:12
+    now_tehran = get_tehran_now_dt()
+    sh = jdatetime.datetime.fromgregorian(datetime=now_tehran)
+    return sh.strftime("%Y/%m/%d %H:%M:%S")
+
+
 # ------------------ دیتابیس ------------------
 def get_db_connection():
     if DATABASE_URL:
         return psycopg2.connect(DATABASE_URL)
     return sqlite3.connect("shop.db")
+
+
+def get_sqlalchemy_engine_for_pandas():
+    # برای استفاده در pandas.read_sql_query
+    if DATABASE_URL:
+        return create_engine(DATABASE_URL)
+    else:
+        return create_engine("sqlite:///shop.db")
 
 
 def init_db():
@@ -69,7 +96,8 @@ def init_db():
                 name TEXT,
                 phone TEXT,
                 address TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                -- تاریخ ثبت به صورت متن شمسی ذخیره می‌شود
+                created_at TEXT
             );
         """)
         c.execute("""
@@ -83,7 +111,8 @@ def init_db():
                 price TEXT,
                 receipt_file_id TEXT,
                 status TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                -- تاریخ سفارش به صورت متن شمسی ذخیره می‌شود
+                created_at TEXT
             );
         """)
     else:
@@ -93,7 +122,7 @@ def init_db():
                 name TEXT,
                 phone TEXT,
                 address TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT
             )
         """)
         c.execute("""
@@ -107,7 +136,7 @@ def init_db():
                 price TEXT,
                 receipt_file_id TEXT,
                 status TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT
             )
         """)
     conn.commit()
@@ -180,23 +209,26 @@ async def reg_get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = context.user_data["reg_name"]
     phone = context.user_data["reg_phone"]
     address = context.user_data["reg_address"]
+    created_at = get_tehran_now_shamsi_str()
 
     conn = get_db_connection()
     c = conn.cursor()
     if DATABASE_URL:
         c.execute("""
-            INSERT INTO users (user_id, name, phone, address)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO users (user_id, name, phone, address, created_at)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 phone = EXCLUDED.phone,
-                address = EXCLUDED.address;
-        """, (user_id, name, phone, address))
+                address = EXCLUDED.address,
+                created_at = EXCLUDED.created_at;
+        """, (user_id, name, phone, address, created_at))
     else:
+        # در SQLite INSERT OR REPLACE کل ردیف را جایگزین می‌کند
         c.execute("""
-            INSERT OR REPLACE INTO users (user_id, name, phone, address)
-            VALUES (?, ?, ?, ?);
-        """, (user_id, name, phone, address))
+            INSERT OR REPLACE INTO users (user_id, name, phone, address, created_at)
+            VALUES (?, ?, ?, ?, ?);
+        """, (user_id, name, phone, address, created_at))
     conn.commit()
     conn.close()
 
@@ -307,19 +339,20 @@ async def order_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     address = context.user_data.get("order_address", "-")
     perfume = context.user_data.get("perfume_name", "-")
     price = context.user_data.get("perfume_price", "-")
+    created_at = get_tehran_now_shamsi_str()
 
     conn = get_db_connection()
     c = conn.cursor()
     if DATABASE_URL:
         c.execute("""
-            INSERT INTO orders (order_id, user_id, name, phone, address, perfume, price, receipt_file_id, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'در انتظار تایید');
-        """, (order_id, user_id, name, phone, address, perfume, price, photo_file_id))
+            INSERT INTO orders (order_id, user_id, name, phone, address, perfume, price, receipt_file_id, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'در انتظار تایید', %s);
+        """, (order_id, user_id, name, phone, address, perfume, price, photo_file_id, created_at))
     else:
         c.execute("""
-            INSERT INTO orders (order_id, user_id, name, phone, address, perfume, price, receipt_file_id, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'در انتظار تایید');
-        """, (order_id, user_id, name, phone, address, perfume, price, photo_file_id))
+            INSERT INTO orders (order_id, user_id, name, phone, address, perfume, price, receipt_file_id, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'در انتظار تایید', ?);
+        """, (order_id, user_id, name, phone, address, perfume, price, photo_file_id, created_at))
     conn.commit()
     conn.close()
 
@@ -338,7 +371,8 @@ async def order_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📞 تلفن: {phone}\n"
         f"📍 آدرس: {address}\n"
         f"🏷 محصول: {perfume}\n"
-        f"💰 مبلغ: {price}"
+        f"💰 مبلغ: {price}\n"
+        f"🕒 تاریخ/ساعت: {created_at}"
     )
     admin_keyboard = [
         [
@@ -376,12 +410,17 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_db_connection()
     c = conn.cursor()
+    target_user_id = None
     if DATABASE_URL:
         c.execute("UPDATE orders SET status = %s WHERE order_id = %s RETURNING user_id;", (db_status, order_id))
         row = c.fetchone()
+        if row:
+            target_user_id = row[0]
     else:
         c.execute("SELECT user_id FROM orders WHERE order_id = ?;", (order_id,))
         row = c.fetchone()
+        if row:
+            target_user_id = row[0]
         c.execute("UPDATE orders SET status = ? WHERE order_id = ?;", (db_status, order_id))
     conn.commit()
     conn.close()
@@ -392,8 +431,7 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=None,
     )
 
-    if row:
-        target_user_id = row[0]
+    if target_user_id:
         msg = (
             f"سفارش شماره #{order_id} شما تایید شد و به زودی ارسال می‌شود. 🚀"
             if is_approve
@@ -414,7 +452,7 @@ async def show_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT user_id, name, phone, address, created_at FROM users ORDER BY created_at DESC;")
+    c.execute("SELECT user_id, name, phone, address, created_at FROM users ORDER BY rowid DESC;") if not DATABASE_URL else c.execute("SELECT user_id, name, phone, address, created_at FROM users ORDER BY created_at DESC;")
     users = c.fetchall()
     conn.close()
 
@@ -425,12 +463,13 @@ async def show_users_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"👥 لیست کاربران ثبت‌نام شده ({len(users)} نفر):\n\n"
     for idx, u in enumerate(users, 1):
         uid, name, phone, addr, created_at = u
+        created_str = created_at if created_at else "-"
         text += (
             f"{idx}. نام: {name}\n"
             f"   🆔 آیدی: `{uid}`\n"
             f"   📞 تلفن: `{phone}`\n"
             f"   📍 آدرس: {addr}\n"
-            f"   📅 تاریخ: {str(created_at)[:10]}\n"
+            f"   📅 تاریخ: {created_str}\n"
             f"-------------------------\n"
         )
 
@@ -447,15 +486,17 @@ async def export_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔️ دسترسی فقط برای ادمین مجاز است.")
         return
 
-    df = pd.read_sql_query("SELECT * FROM orders ORDER BY created_at DESC", get_db_connection())
+    engine = get_sqlalchemy_engine_for_pandas()
+    df = pd.read_sql_query("SELECT * FROM orders ORDER BY order_id DESC", con=engine)
     if df.empty:
         await update.message.reply_text("هیچ سفارشی ثبت نشده است.")
         return
 
-    file_name = "orders.xlsx"
+    # نام فایل شامل تاریخ شمسی
+    file_name = f"orders_{get_tehran_now_shamsi_str().replace('/', '-')}.xlsx"
     df.to_excel(file_name, index=False)
     with open(file_name, "rb") as f:
-        await update.message.reply_document(document=f, caption="📊 گزارش سفارش‌های فروشگاه")
+        await update.message.reply_document(document=f, caption="📊 گزارش سفارش‌های فروشگاه (تاریخ/ساعت به وقت تهران)")
     os.remove(file_name)
 
 
