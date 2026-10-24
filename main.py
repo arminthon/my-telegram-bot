@@ -1,5 +1,5 @@
 # main.py — فروشگاه عطر آرمین 🌸
-# python-telegram-bot v20+ (webhooks-ready for Render)
+# python-telegram-bot v20+ (Render Webhook)
 
 import os
 import logging
@@ -21,7 +21,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT-YOUR-TOKEN-HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "93543054"))
 
-DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL on Render
+DATABASE_URL = os.getenv("DATABASE_URL")
 EXCEL_FILE = os.path.join(os.path.dirname(__file__), "products.xlsx")
 
 TEHRAN = pytz.timezone("Asia/Tehran")
@@ -47,21 +47,28 @@ def db_setup():
     conn, kind = get_conn()
     cur = conn.cursor()
     if kind == "pg":
-        cur.execute("CREATE SEQUENCE IF NOT EXISTS orders_order_id_seq;")
+        # 1. ساخت جدول اولیه در صورت نبودن
         cur.execute("""
             CREATE TABLE IF NOT EXISTS orders (
-                order_id     BIGINT PRIMARY KEY DEFAULT nextval('orders_order_id_seq'),
-                user_id      BIGINT NOT NULL,
-                username     TEXT,
-                sku          TEXT NOT NULL,
-                product_name TEXT,
-                qty          INT  NOT NULL DEFAULT 1,
-                price_toman  BIGINT,
-                status       TEXT NOT NULL DEFAULT 'در انتظار پرداخت',
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+                order_id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL
             );
         """)
-        # If order_id column wasn't attached to default seq earlier:
+        # 2. حل خطای ستون‌ها: اضافه کردن خودکار تمام ستون‌های لازم به جدول رندر
+        columns_to_ensure = [
+            ("username", "TEXT"),
+            ("sku", "TEXT"),
+            ("product_name", "TEXT"),
+            ("qty", "INT DEFAULT 1"),
+            ("price_toman", "BIGINT DEFAULT 0"),
+            ("status", "TEXT DEFAULT 'در انتظار پرداخت'"),
+            ("created_at", "TIMESTAMPTZ DEFAULT now()")
+        ]
+        for col_name, col_type in columns_to_ensure:
+            cur.execute(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
+        
+        # اطمینان از مقداردهی پیش‌فرض sequence برای order_id
+        cur.execute("CREATE SEQUENCE IF NOT EXISTS orders_order_id_seq;")
         cur.execute("ALTER TABLE orders ALTER COLUMN order_id SET DEFAULT nextval('orders_order_id_seq');")
         cur.execute("SELECT setval('orders_order_id_seq', COALESCE((SELECT MAX(order_id) FROM orders), 1));")
     else:
@@ -89,15 +96,15 @@ def record_order(user_id, username, sku, product_name, qty, price_toman):
     if kind == "pg":
         cur.execute(
             """INSERT INTO orders (user_id, username, sku, product_name, qty, price_toman)
-               VALUES (%s,%s,%s,%s,%s,%s) RETURNING order_id;""",
-            (user_id, username, sku, product_name, qty, safe_price),
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING order_id;""",
+            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price),
         )
         order_id = cur.fetchone()[0]
     else:
         cur.execute(
             """INSERT INTO orders (user_id, username, sku, product_name, qty, price_toman, created_at)
-               VALUES (?,?,?,?,?,?,?);""",
-            (user_id, username, sku, product_name, qty, safe_price, datetime.now(TEHRAN).isoformat()),
+               VALUES (?, ?, ?, ?, ?, ?, ?);""",
+            (user_id, str(username or ""), str(sku), str(product_name or ""), qty, safe_price, datetime.now(TEHRAN).isoformat()),
         )
         order_id = cur.lastrowid
     conn.commit()
@@ -117,7 +124,6 @@ def fetch_orders(limit=50):
 
 # ----------------------------- Excel Products -----------------------------
 def get_products(only_active=True):
-    """Reads products safely from products.xlsx."""
     if not os.path.exists(EXCEL_FILE):
         return []
     df = pd.read_excel(EXCEL_FILE)
@@ -158,7 +164,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"سلام {user_name} خوش آمدید! 👋\n"
         f"به {SHOP_NAME} خوش آمدید.\n\n"
-        "از منوی زیر می‌توانید محصولات را مشاهده یا سفارش خود را پیگیری کنید:",
+        "از منوی زیر استفاده کنید:",
         reply_markup=main_menu(),
     )
 
@@ -183,7 +189,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🛒 ثبت سفارش: /buy_{p.get('sku')}"
             )
             photo = str(p.get("photo_file_id") or "").strip()
-            if photo and photo.lower() != "nan" and photo.lower() != "none":
+            if photo and photo.lower() not in ["nan", "none"]:
                 try:
                     await update.message.reply_photo(photo, caption=caption)
                 except Exception:
@@ -197,7 +203,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("شما هنوز هیچ سفارشی ثبت نکرده‌اید.")
             return
 
-        lines = ["📋 **آخرین سفارش‌های شما:**\n"]
+        lines = ["📋 آخرین سفارش‌های شما:\n"]
         for o in user_orders[:10]:
             p_price = fmt_price(o.get('price_toman'))
             lines.append(
@@ -213,11 +219,11 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💳 شماره کارت جهت پرداخت:\n`{CARD_NUMBER}`\n"
             f"👤 صاحب حساب: {CARD_HOLDER}\n\n"
-            "لطفاً پس از واریز، تصویر فیش را به همراه شماره سفارش برای پشتیبانی ارسال کنید."
+            "لطفاً پس از واریز، تصویر فیش را ارسال فرمایید."
         )
 
     elif text == "📞 پشتیبانی":
-        await update.message.reply_text("جهت ارتباط با واحد پشتیبانی و ارسال فیش واریز:\n@Armin (یا آیدی ادمین)")
+        await update.message.reply_text("جهت پشتیبانی:\n@Armin (یا ارسال پیام به ادمین)")
 
 # ----------------------------- Buy Flow -----------------------------
 BUY_QTY = 1
@@ -256,7 +262,7 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         qty = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("لطفاً تعداد را فقط به صورت عدد انگلیسی وارد کنید:")
+        await update.message.reply_text("لطفاً تعداد را فقط به صورت عدد وارد کنید:")
         return BUY_QTY
 
     stock = int(float(p.get("stock_qty") or 0))
@@ -278,7 +284,7 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"🎉 سفارش شما با موفقیت ثبت شد!\n\n"
-        f"🧾 شماره پیگیری سفارش: #{order_id}\n"
+        f"🧾 شماره پیگیری: #{order_id}\n"
         f"🛍 عطر: {p.get('product_name')}\n"
         f"🔢 تعداد: {qty} عدد\n"
         f"💵 مبلغ کل: {fmt_price(total)}\n\n"
@@ -288,7 +294,6 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu(),
     )
 
-    # اطلاع‌رسانی به ادمین
     try:
         await context.bot.send_message(
             ADMIN_ID,
@@ -307,15 +312,13 @@ async def buy_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ----------------------------- Admin Tools -----------------------------
 async def getid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور راهنما یا پاسخ به دستور getid"""
     if update.effective_user.id != ADMIN_ID:
         return
     await update.message.reply_text(
-        "📸 عکس عطر را همینجا بفرست یا فوروارد کن تا شناسه (file_id) آن را برای فایل اکسل دریافت کنی."
+        "📸 عکس عطر را همینجا بفرست تا file_id آن را برای اکسل دریافت کنی."
     )
 
 async def catch_photo_for_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت خودکار عکس و برگرداندن file_id فقط برای ادمین"""
     if update.effective_user.id != ADMIN_ID:
         return
     msg = update.message
@@ -330,8 +333,8 @@ async def catch_photo_for_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if fid:
         await msg.reply_text(
-            f"✅ **شناسه عکس (photo_file_id):**\n\n`{fid}`\n\n"
-            "روی متن بالا کلیک کنید تا کپی شود، سپس آن را در ستون `photo_file_id` اکسل قرار دهید.",
+            f"✅ شناسه عکس (photo_file_id):\n\n`{fid}`\n\n"
+            "روی متن بالا بزن کپی بشه، بذار تو ستون photo_file_id اکسل.",
             parse_mode="Markdown"
         )
 
@@ -340,7 +343,7 @@ async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     orders = fetch_orders(100)
     if not orders:
-        await update.message.reply_text("هیچ سفارشی در دیتابیس ثبت نشده است.")
+        await update.message.reply_text("هیچ سفارشی ثبت نشده است.")
         return
     df = pd.DataFrame(orders)
     path = os.path.join(os.path.dirname(__file__), "orders_report.xlsx")
@@ -370,7 +373,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("orders", admin_orders))
     app.add_handler(buy_conv)
 
-    # دریافت عکس برای استخراج file_id
+    # هندل عکس برای file_id
     app.add_handler(MessageHandler(filters.PHOTO, catch_photo_for_id))
 
     # دکمه‌های متنی
