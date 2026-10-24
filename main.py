@@ -59,17 +59,14 @@ def get_db_connection():
         import psycopg2
         return psycopg2.connect(DATABASE_URL)
     return sqlite3.connect("bot_users.db")
+
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
 
     if DATABASE_URL:
-        # حذف جدول‌های ناسازگار قبلی روی رندر و ساخت جدول استاندارد جدید
-        cur.execute("DROP TABLE IF EXISTS users CASCADE;")
-        cur.execute("DROP TABLE IF EXISTS orders CASCADE;")
-        
         cur.execute("""
-            CREATE TABLE users (
+            CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 name TEXT,
@@ -79,7 +76,7 @@ def init_db():
             );
         """)
         cur.execute("""
-            CREATE TABLE orders (
+            CREATE TABLE IF NOT EXISTS orders (
                 order_id BIGINT PRIMARY KEY,
                 user_id BIGINT,
                 perfume_name TEXT,
@@ -120,7 +117,6 @@ def init_db():
     cur.close()
     conn.close()
 
-
 def db_execute(query, params=(), fetch=False):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -148,13 +144,18 @@ async def start_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return REG_NAME
 
 async def get_reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["name"] = update.message.text.strip()
+    text = update.message.text.strip()
+    if text == "❌ انصراف":
+        return await cancel(update, context)
+    context.user_data["name"] = text
     kb = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text("📱 شماره تماس خود را وارد کنید (مثلاً 09121234567):", reply_markup=kb)
     return REG_PHONE
 
 async def get_reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    if text == "❌ انصراف":
+        return await cancel(update, context)
     if not (text.isdigit() and len(text) == 11 and text.startswith("09")):
         await update.message.reply_text("❌ شماره تماس معتبر نیست. دوباره وارد کنید (مثلاً 09121234567):")
         return REG_PHONE
@@ -164,6 +165,10 @@ async def get_reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return REG_ADDRESS
 
 async def get_reg_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text == "❌ انصراف":
+        return await cancel(update, context)
+
     user = update.effective_user
     db_execute(
         """INSERT INTO users (user_id, username, name, phone, address)
@@ -176,7 +181,7 @@ async def get_reg_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
            ON CONFLICT (user_id) DO UPDATE
            SET name = excluded.name, phone = excluded.phone, address = excluded.address""",
         (user.id, user.username or "-", context.user_data["name"],
-         context.user_data["phone"], update.message.text.strip()),
+         context.user_data["phone"], text),
     )
     kb = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text("✅ ثبت‌نام شما با موفقیت انجام شد! حالا می‌توانید خرید کنید 🛍", reply_markup=kb)
@@ -200,19 +205,54 @@ async def choose_perfume(update: Update, context: ContextTypes.DEFAULT_TYPE):
     key = query.data
     name, price = PERFUMES[key]
     context.user_data["perfume"] = (name, price)
+    user_id = update.effective_user.id
 
-    kb = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
-    await query.message.reply_text(
-        f"✅ انتخاب شما: {name}\n💰 قیمت: {price:,} تومان\n\n"
-        "🏠 لطفاً آدرس پستی خود را بفرستید:",
-        reply_markup=kb,
+    # بررسی ثبت‌نام قبلی کاربر در دیتابیس
+    user_data = db_execute(
+        "SELECT name, phone, address FROM users WHERE user_id = %s" if DATABASE_URL
+        else "SELECT name, phone, address FROM users WHERE user_id = ?",
+        (user_id,),
+        fetch=True
     )
-    return ORDER_ADDRESS
+
+    if user_data:
+        # استفاده خودکار از اطلاعات ثبت‌شده
+        u_name, u_phone, u_address = user_data[0]
+        context.user_data["order_name"] = u_name
+        context.user_data["order_phone"] = u_phone
+        context.user_data["order_address"] = u_address
+
+        kb = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
+        await query.message.reply_text(
+            f"🧾 فاکتور سفارش شما:\n\n"
+            f"👤 تحویل‌گیرنده: {u_name}\n"
+            f"📱 شماره تماس: {u_phone}\n"
+            f"📍 آدرس ارسال: {u_address}\n\n"
+            f"🌸 محصول: {name}\n"
+            f"💰 مبلغ قابل پرداخت: {price:,} تومان\n\n"
+            f"💳 لطفاً مبلغ را به شماره کارت زیر واریز فرمایید:\n"
+            f"`{CARD_NUMBER}`\n{CARD_HOLDER}\n\n"
+            "📸 سپس **عکس فیش واریزی** را همینجا ارسال فرمایید:",
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
+        return WAIT_RECEIPT
+    else:
+        # کاربر ثبت‌نام نکرده و اطلاعات از او گرفته می‌شود
+        kb = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
+        await query.message.reply_text(
+            f"✅ انتخاب شما: {name}\n💰 قیمت: {price:,} تومان\n\n"
+            "⚠️ شما هنوز در سامانه ثبت‌نام نکرده‌اید.\n"
+            "🏠 لطفاً آدرس پستی دقیق خود را ارسال فرمایید:",
+            reply_markup=kb,
+        )
+        return ORDER_ADDRESS
 
 async def get_order_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip() == "❌ انصراف":
+    text = update.message.text.strip()
+    if text == "❌ انصراف":
         return await cancel(update, context)
-    context.user_data["order_address"] = update.message.text.strip()
+    context.user_data["order_address"] = text
     kb = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text("📱 شماره تماس گیرنده را بفرستید:", reply_markup=kb)
     return ORDER_PHONE
@@ -227,12 +267,12 @@ async def get_order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order_phone"] = text
 
     name, price = context.user_data["perfume"]
-    kb = ReplyKeyboardRemove()
+    kb = ReplyKeyboardMarkup(CANCEL_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text(
         f"🧾 فاکتور سفارش شما:\n\n"
         f"عطر: {name}\nمبلغ: {price:,} تومان\n\n"
         f"💳 جهت پرداخت، مبلغ را واریز کنید به:\n"
-        f"شماره کارت: {CARD_NUMBER}\n{CARD_HOLDER}\n\n"
+        f"شماره کارت: `{CARD_NUMBER}`\n{CARD_HOLDER}\n\n"
         "📸 سپس **عکس فیش واریزی** را همینجا بفرستید:",
         reply_markup=kb,
         parse_mode="Markdown",
@@ -240,9 +280,12 @@ async def get_order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAIT_RECEIPT
 
 async def get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text and update.message.text.strip() == "❌ انصراف":
+        return await cancel(update, context)
+
     photo = update.message.photo
     if not photo:
-        await update.message.reply_text("❌ لطفاً فقط عکس فیش واریزی را بفرستید:")
+        await update.message.reply_text("❌ لطفاً عکس فیش واریزی را ارسال کنید یا دکمه ❌ انصراف را بزنید:")
         return WAIT_RECEIPT
 
     user = update.effective_user
@@ -268,7 +311,7 @@ async def get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True)
     await update.message.reply_text(
         f"✅ سفارش شما ثبت شد!\n🔖 کد پیگیری: {order_id}\n\n"
-        "پس از تایید فیش توسط فروشنده، خبر داده می‌شود. متشکریم 🌹",
+        "پس از بررسی فیش توسط ادمین، نتیجه به شما اطلاع داده خواهد شد. متشکریم 🌹",
         reply_markup=kb,
     )
 
@@ -283,7 +326,9 @@ async def get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption=(
             f"🛎 سفارش جدید!\nکد: {order_id}\n"
             f"کاربر: {user.first_name} (@{user.username}) - {user.id}\n"
-            f"عطر: {name}\nمبلغ: {price:,} تومان"
+            f"عطر: {name}\nمبلغ: {price:,} تومان\n"
+            f"شماره تماس: {context.user_data['order_phone']}\n"
+            f"آدرس: {context.user_data['order_address']}"
         ),
         reply_markup=admin_kb,
     )
@@ -297,15 +342,22 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, order_id = query.data.split(":")
     status = "approved" if action == "approve" else "rejected"
 
-    db_execute("UPDATE orders SET status = %s WHERE order_id = %s" if DATABASE_URL
-               else "UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
+    db_execute(
+        "UPDATE orders SET status = %s WHERE order_id = %s" if DATABASE_URL
+        else "UPDATE orders SET status = ? WHERE order_id = ?",
+        (status, order_id),
+    )
 
-    user_row = db_execute("SELECT user_id FROM orders WHERE order_id = %s" if DATABASE_URL
-                          else "SELECT user_id FROM orders WHERE order_id = ?", (order_id,), fetch=True)
+    user_row = db_execute(
+        "SELECT user_id FROM orders WHERE order_id = %s" if DATABASE_URL
+        else "SELECT user_id FROM orders WHERE order_id = ?",
+        (order_id,),
+        fetch=True,
+    )
     if user_row:
-        msg = (f"✅ پرداخت سفارش {order_id} تایید شد! به‌زودی ارسال می‌شود 🌹"
+        msg = (f"✅ پرداخت سفارش {order_id} تایید شد! بسته شما به‌زودی ارسال می‌شود 🌹"
                if status == "approved" else
-               f"❌ فیش سفارش {order_id} تایید نشد. لطفاً با پشتیبانی تماس بگیرید.")
+               f"❌ متاسفانه فیش واریزی سفارش {order_id} تایید نشد. لطفاً در صورت مغایرت با پشتیبانی تماس بگیرید.")
         try:
             await context.bot.send_message(chat_id=user_row[0][0], text=msg)
         except Exception:
@@ -318,14 +370,14 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def export_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔️ دسترسی فقط برای ادمین.")
+        await update.message.reply_text("⛔️ دسترسی فقط برای ادمین مجاز است.")
         return
     df = pd.read_sql_query(
         "SELECT * FROM orders ORDER BY created_at DESC",
         get_db_connection(),
     )
     if df.empty:
-        await update.message.reply_text("هنوز سفارشی ثبت نشده.")
+        await update.message.reply_text("هنوز سفارشی ثبت نشده است.")
         return
     df.to_excel("orders.xlsx", index=False)
     with open("orders.xlsx", "rb") as f:
@@ -354,8 +406,10 @@ def main():
             REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reg_phone)],
             REG_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_reg_address)],
         },
-        fallbacks=[CommandHandler("cancel", cancel),
-                   MessageHandler(filters.Regex("^❌ انصراف$"), cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^❌ انصراف$"), cancel),
+        ],
     )
 
     order_conv = ConversationHandler(
@@ -363,10 +417,15 @@ def main():
         states={
             ORDER_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_order_address)],
             ORDER_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_order_phone)],
-            WAIT_RECEIPT: [MessageHandler(filters.PHOTO, get_receipt)],
+            WAIT_RECEIPT: [
+                MessageHandler(filters.PHOTO, get_receipt),
+                MessageHandler(filters.Regex("^❌ انصراف$"), cancel),
+            ],
         },
-        fallbacks=[CommandHandler("cancel", cancel),
-                   MessageHandler(filters.Regex("^❌ انصراف$"), cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^❌ انصراف$"), cancel),
+        ],
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -376,7 +435,7 @@ def main():
     app.add_handler(order_conv)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern="^(approve|reject):"))
 
-    # انتخاب هوشمند بین وب‌هوک (سرور Render) یا پولینگ (سیستم لوکال)
+    # تنظیم اتصال وب‌هوک برای Render یا پولینگ برای تست لوکال
     if WEBHOOK_URL:
         print("Starting webhook on Render...")
         app.run_webhook(
