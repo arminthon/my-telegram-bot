@@ -1,3 +1,6 @@
 .env
+shop.db
 *.db
+.ipynb_checkpoints/
 __pycache__/
+*.pyc

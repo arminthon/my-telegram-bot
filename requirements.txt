@@ -1,7 +1,7 @@
-python-telegram-bot[webhooks]
-psycopg2-binary
+python-telegram-bot>=20.0
 pandas
 openpyxl
+psycopg2-binary
 python-dotenv
-jdatetime
 pytz
+requests

@@ -40,7 +40,6 @@ def db_setup():
     conn, kind = get_conn()
     cur = conn.cursor()
     if kind == "pg":
-        # حذف جدول قبلی برای ریست کامل و رفع قطعی ارور ستون‌ها
         cur.execute("DROP TABLE IF EXISTS orders CASCADE;")
         cur.execute("""
             CREATE TABLE orders (
