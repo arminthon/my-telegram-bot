@@ -32,6 +32,56 @@ SUPPORT_TEXT = "آیدی پشتیبانی تلگرام: @Armin_Support_Shop\nت�
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# ----------------- تابع تبدیل تاریخ میلادی به شمسی -----------------
+def gregorian_to_jalali(gy, gm, gd):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    if gy > 1600:
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
+
+    gy2 = gy if gm > 2 else gy - 1
+    days = (365 * gy) + ((gy2 + 4) // 4) - ((gy2 + 100) // 100) + ((gy2 + 400) // 400) - 80 + gd + g_d_m[gm - 1]
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+
+    if days < 186:
+        jm = 1 + (days // 31)
+        jd = 1 + (days % 31)
+    else:
+        jm = 7 + ((days - 186) // 30)
+        jd = 1 + ((days - 186) % 30)
+
+    return jy, jm, jd
+
+def format_to_tehran_shamsi(dt_val):
+    if dt_val is None or pd.isna(dt_val):
+        return "—"
+    try:
+        if isinstance(dt_val, str):
+            dt = pd.to_datetime(dt_val)
+        else:
+            dt = dt_val
+
+        # اگر تایم‌زون نداشت، فرض می‌کنیم UTC است
+        if dt.tzinfo is None:
+            dt = pytz.utc.localize(dt)
+        # تبدیل دقیق به وقت تهران
+        dt_tehran = dt.astimezone(TEHRAN)
+
+        jy, jm, jd = gregorian_to_jalali(dt_tehran.year, dt_tehran.month, dt_tehran.day)
+        return f"{jy:04d}/{jm:02d}/{jd:02d} - {dt_tehran.strftime('%H:%M:%S')}"
+    except Exception as e:
+        return str(dt_val)
+
 # ----------------- دیتابیس خودکار -----------------
 import sqlite3
 
@@ -262,8 +312,8 @@ def cancel_kb():
 
 def profile_inline_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ ثبت نام / ویرایش اطلاعات", callback_data="btn_edit_profile")],
-        [InlineKeyboardButton("🛍 مشاهده و خرید محصولات", callback_data="btn_view_products")]
+        [InlineKeyboardButton("✏️ ثبت نام / ویرایش مشخصات", callback_data="btn_edit_profile")],
+        [InlineKeyboardButton("🛍 مشاهده و خرید عطرها", callback_data="btn_view_products")]
     ])
 
 def admin_order_actions_kb(order_id: int):
@@ -294,7 +344,7 @@ async def show_profile_card(target_send_func, uid: int):
     )
     await target_send_func(msg, reply_markup=profile_inline_kb(), parse_mode="Markdown")
 
-# ----------------- هندلرهای دستورات متنی منو -----------------
+# ----------------- دستورات منو و اسلش‌ها -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     uname = update.effective_user.username
@@ -345,7 +395,7 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("هیچ کاربری در سیستم ثبت نشده است.")
         return
 
-    msg = f"👥 **لیست ۱۵ کاربر اخیر:**\n\n"
+    msg = "👥 **لیست ۱۵ کاربر اخیر:**\n\n"
     for u in rows:
         msg += f"• `{u[0]}` | @{u[1] or '—'} | {u[2] or 'بدون نام'} | `{u[3] or 'بدون شماره'}`\n"
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -354,7 +404,6 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 PROF_NAME, PROF_PHONE, PROF_ADDR = range(10, 13)
 
 async def profile_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # این متد هم از دکمه شیشه‌ای و هم از پیام متنی فراخوانی می‌شود
     if update.callback_query:
         await update.callback_query.answer()
         target = update.callback_query.message.reply_text
@@ -567,7 +616,7 @@ async def handle_admin_order_decision(update: Update, context: ContextTypes.DEFA
         except Exception as e:
             logging.error(f"Error notifying buyer {buyer_id}: {e}")
 
-# ----------------- بخش اکسل ادمین (حل قطعی باگ خروجی) -----------------
+# ----------------- بخش اکسل ادمین (با تاریخ شمسی و ساعت تهران) -----------------
 async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -581,20 +630,42 @@ async def admin_export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("هیچ سفارشی در دیتابیس ثبت نشده است.")
             return
 
-        # تبدیل ستون تاریخ به رشته ساده بدون timezone تا باگ openpyxl رخ ندهد
+        # تبدیل تاریخ و ساعت میلادی/UTC به شمسی و وقت تهران
         if "created_at" in df.columns:
-            df["created_at"] = df["created_at"].astype(str)
+            df["created_at"] = df["created_at"].apply(format_to_tehran_shamsi)
+
+        # نام‌گذاری شکیل و فارسی ستون‌ها در فایل اکسل
+        rename_map = {
+            "order_id": "شناسه سفارش",
+            "user_id": "شناسه عددی کاربر",
+            "username": "نام کاربری تلگرام",
+            "full_name": "نام خریدار",
+            "phone": "شماره تماس",
+            "address": "آدرس پستی",
+            "sku": "کد کالا",
+            "product_name": "نام عطر",
+            "qty": "تعداد",
+            "price_toman": "مبلغ کل (تومان)",
+            "status": "وضعیت سفارش",
+            "created_at": "تاریخ و ساعت ثبت (شمسی)"
+        }
+        df = df.rename(columns=rename_map)
 
         buf = io.BytesIO()
         df.to_excel(buf, index=False, engine="openpyxl")
         buf.seek(0)
         file_bytes = buf.getvalue()
 
+        # نام فایل خروجی بر اساس زمان شمسی لحظه‌ای
+        now_tehran = datetime.now(TEHRAN)
+        jy, jm, jd = gregorian_to_jalali(now_tehran.year, now_tehran.month, now_tehran.day)
+        filename = f"orders_{jy:04d}{jm:02d}{jd:02d}_{now_tehran.strftime('%H%M')}.xlsx"
+
         await context.bot.send_document(
             chat_id=ADMIN_ID,
             document=file_bytes,
-            filename=f"orders_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            caption="📊 **گزارش کلیه سفارشات ثبت‌شده در فروشگاه عطر آرمین**",
+            filename=filename,
+            caption="📊 **گزارش کلیه سفارشات (تاریخ شمسی و ساعت رسمی ایران)**",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -701,7 +772,7 @@ def main():
     db_setup()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # مکالمه ثبت‌نام / ویرایش پروفایل با پشتیبانی از دکمه شیشه‌ای و متنی
+    # مکالمه ثبت‌نام / ویرایش پروفایل
     prof_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(profile_edit_start, pattern=r"^btn_edit_profile$"),
