@@ -543,6 +543,7 @@ def main():
             CommandHandler("cancel", cancel),
             CommandHandler("start", start),
         ],
+        per_message=False,
     )
 
     app.add_handler(CommandHandler("start", start))
