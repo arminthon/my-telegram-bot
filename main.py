@@ -7,10 +7,13 @@ import pytz
 import pandas as pd
 from dotenv import load_dotenv
 
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import (
+    Update, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+    InlineKeyboardButton, InlineKeyboardMarkup
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    ConversationHandler, ContextTypes, filters
+    ConversationHandler, CallbackQueryHandler, ContextTypes, filters
 )
 
 load_dotenv()
@@ -42,7 +45,6 @@ def db_setup():
     conn, kind = get_conn()
     cur = conn.cursor()
     if kind == "pg":
-        # ساخت جدول‌ها در صورتی که نباشند
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -68,7 +70,6 @@ def db_setup():
                 created_at TIMESTAMPTZ DEFAULT now()
             );
         """)
-        # اضافه کردن ستون‌های جاافتاده برای حل قطعی خطای UndefinedColumn
         user_cols = [
             ("username", "TEXT"),
             ("full_name", "TEXT"),
@@ -195,6 +196,27 @@ def record_order(user_id, username, full_name, phone, address, sku, product_name
     conn.close()
     return order_id
 
+def get_order_by_id(order_id):
+    conn, kind = get_conn()
+    cur = conn.cursor()
+    q = "SELECT order_id, user_id, product_name, qty, price_toman, status FROM orders WHERE order_id = %s" if kind == "pg" else "SELECT order_id, user_id, product_name, qty, price_toman, status FROM orders WHERE order_id = ?"
+    cur.execute(q, (order_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row:
+        return {"order_id": row[0], "user_id": row[1], "product_name": row[2], "qty": row[3], "price_toman": row[4], "status": row[5]}
+    return None
+
+def update_order_status(order_id, new_status):
+    conn, kind = get_conn()
+    cur = conn.cursor()
+    q = "UPDATE orders SET status = %s WHERE order_id = %s" if kind == "pg" else "UPDATE orders SET status = ? WHERE order_id = ?"
+    cur.execute(q, (new_status, order_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 # ----------------- اکسل محصولات -----------------
 def get_products():
     if not os.path.exists(EXCEL_FILE):
@@ -238,6 +260,14 @@ def main_kb(user_id: int):
 
 def cancel_kb():
     return ReplyKeyboardMarkup([["❌ انصراف"]], resize_keyboard=True)
+
+def admin_order_actions_kb(order_id: int):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ تایید پرداخت و ارسال", callback_data=f"ord_approve:{order_id}"),
+            InlineKeyboardButton("❌ رد سفارش (نامعتبر)", callback_data=f"ord_reject:{order_id}")
+        ]
+    ])
 
 # ----------------- دستور /start -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,7 +412,7 @@ async def buy_receipt_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ سفارش شما با کد پیگیری #{order_id} ثبت شد!\n"
-        "فیش واریزی برای بررسی ارسال گردید.",
+        "فیش واریزی برای بررسی ارسال گردید. به محض تایید به شما اطلاع داده می‌شود.",
         reply_markup=main_kb(uid)
     )
 
@@ -393,13 +423,15 @@ async def buy_receipt_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📍 آدرس: {prof.get('address')}\n\n"
         f"🌸 عطر: {p.get('product_name')}\n"
         f"📦 تعداد: {qty} عدد\n"
-        f"💰 مبلغ واریز: {fmt_price(total)}"
+        f"💰 مبلغ واریز: {fmt_price(total)}\n\n"
+        "👇 وضعیت بررسی را انتخاب کنید:"
     )
     try:
         await context.bot.send_photo(
             chat_id=ADMIN_ID,
             photo=receipt_file_id,
             caption=admin_caption,
+            reply_markup=admin_order_actions_kb(order_id),
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -413,7 +445,65 @@ async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ عملیات لغو گردید.", reply_markup=main_kb(update.effective_user.id))
     return ConversationHandler.END
 
-# ----------------- بخش ادمین -----------------
+# ----------------- دکمه‌های تایید / رد ادمین -----------------
+async def handle_admin_order_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    data = query.data or ""
+    action, order_id_str = data.split(":")
+    order_id = int(order_id_str)
+    order = get_order_by_id(order_id)
+
+    if not order:
+        await query.edit_message_caption(caption="❌ سفارش مورد نظر یافت نشد.")
+        return
+
+    buyer_id = order["user_id"]
+    current_caption = query.message.caption or ""
+
+    if action == "ord_approve":
+        update_order_status(order_id, "تایید شده و در حال ارسال 📦")
+        new_caption = current_caption + "\n\n━━━━━━━━━━━━━━━\n✅ **وضعیت: این سفارش توسط ادمین تایید شد و به زودی ارسال می‌شود.**"
+        await query.edit_message_caption(caption=new_caption, reply_markup=None, parse_mode="Markdown")
+
+        # اطلاع‌رسانی به مشتری
+        try:
+            await context.bot.send_message(
+                chat_id=buyer_id,
+                text=(
+                    f"🎉 **خبر خوب! سفارش #{order_id} تایید شد.**\n\n"
+                    f"🌸 محصول: {order['product_name']} ({order['qty']} عدد)\n"
+                    "پرداخت شما احراز گردید و بسته شما در نوبت بسته‌بندی و ارسال پستی قرار گرفت.\n"
+                    "با تشکر از اعتماد شما به فروشگاه عطر آرمین 🌸"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logging.error(f"Error notifying buyer {buyer_id}: {e}")
+
+    elif action == "ord_reject":
+        update_order_status(order_id, "رد شده / نامعتبر ❌")
+        new_caption = current_caption + "\n\n━━━━━━━━━━━━━━━\n❌ **وضعیت: فیش واریزی این سفارش رد شد.**"
+        await query.edit_message_caption(caption=new_caption, reply_markup=None, parse_mode="Markdown")
+
+        # اطلاع‌رسانی به مشتری
+        try:
+            await context.bot.send_message(
+                chat_id=buyer_id,
+                text=(
+                    f"⚠️ **سفارش #{order_id} تایید نشد.**\n\n"
+                    "فیش واریزی یا اطلاعات پرداختی ارسالی توسط بخش مالی تایید نشد.\n"
+                    f"در صورت نیاز به بررسی، لطفاً با پشتیبانی در ارتباط باشید:\n{SUPPORT_TEXT}"
+                )
+            )
+        except Exception as e:
+            logging.error(f"Error notifying buyer {buyer_id}: {e}")
+
+# ----------------- بخش اکسل و عکس ادمین -----------------
 ADMIN_EXCEL_WAIT = 30
 ADMIN_PHOTO_WAIT = 31
 
@@ -589,6 +679,7 @@ def main():
     app.add_handler(buy_conv)
     app.add_handler(excel_conv)
     app.add_handler(photo_conv)
+    app.add_handler(CallbackQueryHandler(handle_admin_order_decision, pattern=r"^ord_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     port = int(os.getenv("PORT", "10000"))
