@@ -52,7 +52,6 @@ IS_POSTGRES = False
 if DATABASE_URL and DATABASE_URL.startswith("postgres"):
     IS_POSTGRES = True
     import psycopg2
-    from psycopg2.extras import DictCursor
 else:
     import sqlite3
 
@@ -184,6 +183,11 @@ IMPORT_WAIT_FILE = 5
 
 ITEMS_PER_PAGE = 4
 
+# پترن‌های اعتبارسنجی
+PHONE_REGEX = re.compile(r"^09\d{9}$")
+POSTAL_REGEX = re.compile(r"^\d{10}$")
+NAME_REGEX = re.compile(r"^[\u0600-\u06FFa-zA-Z\s\u200c]{2,50}$")
+
 RAW_MENU_BUTTONS = [
     "🛍 محصولات و سفارش",
     "👤 پروفایل من",
@@ -255,7 +259,7 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page=
         vol = r[2] if IS_POSTGRES else r["volume_ml"]
         price = r[3] if IS_POSTGRES else r["price_toman"]
         stock = r[4] if IS_POSTGRES else r["stock_qty"]
-        
+
         status_stock = f"{stock} عدد در انبار" if stock > 0 else "ناموجود ❌"
         text += f"🔹 **{name}** ({vol}ml)\n"
         text += f"   💰 قیمت: {price:,.0f} تومان | موجودی: {status_stock}\n\n"
@@ -379,7 +383,7 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 VALUES (?, ?, ?, ?, ?, 'pending', ?);
             """, (user_id, order_data["sku"], order_data["name"], order_data["price"], file_id, now_tehran))
             order_id = cur.lastrowid
-        
+
         if IS_POSTGRES:
             cur.execute("SELECT full_name, phone, address, postal_code FROM users WHERE user_id = %s;", (user_id,))
         else:
@@ -448,7 +452,7 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             cur.execute("SELECT user_id, product_sku, product_name FROM orders WHERE order_id = ?;", (order_id,))
         ord_info = cur.fetchone()
-        
+
         if ord_info:
             target_user = ord_info[0] if IS_POSTGRES else ord_info["user_id"]
             target_sku = ord_info[1] if IS_POSTGRES else ord_info["product_sku"]
@@ -482,7 +486,7 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
     cur.close()
     conn.close()
 
-# بخش ثبت‌نام و مدیریت کاربر
+# ---------- ثبت‌نام با اعتبارسنجی کامل ----------
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "لطفاً **نام و نام‌خانوادگی** خود را وارد فرمایید:\n"
@@ -494,49 +498,80 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def reg_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    if len(text) < 2:
-        await update.message.reply_text("لطفاً نام و نام خانوادگی را کامل بنویسید:")
+    # تبدیل ارقام فارسی به انگلیسی در صورت نیاز
+    text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+
+    if not NAME_REGEX.match(text):
+        await update.message.reply_text(
+            "⚠️ نام وارد شده معتبر نیست!\n"
+            "لطفاً نام و نام‌خانوادگی را فقط با حروف (فارسی یا انگلیسی) وارد کنید:"
+        )
         return REG_NAME
 
     context.user_data["reg_name"] = text
     await update.message.reply_text(
-        "شماره همراه خود را وارد کنید (مثال: 09121234567):",
+        "📱 شماره همراه خود را وارد کنید (مثال: 09121234567):",
         reply_markup=get_cancel_keyboard()
     )
     return REG_PHONE
 
 async def reg_get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    # تبدیل ارقام فارسی/عربی به انگلیسی
+    text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+    text = re.sub(r"[\s\-]", "", text)  # حذف فاصله و خط تیره
+
+    if not PHONE_REGEX.match(text):
+        await update.message.reply_text(
+            "⚠️ شماره وارد شده معتبر نیست!\n"
+            "شماره باید ۱۱ رقم باشد و با 09 شروع شود (مثال: 09121234567).\n"
+            "لطفاً دوباره شماره همراه خود را وارد کنید:",
+        )
+        return REG_PHONE
+
     context.user_data["reg_phone"] = text
     await update.message.reply_text(
-        "نشانی دقیق پستی جهت تحویل سفارش را بنویسید:",
+        "📍 نشانی دقیق پستی جهت تحویل سفارش را بنویسید:",
         reply_markup=get_cancel_keyboard()
     )
     return REG_ADDRESS
 
 async def reg_get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    if len(text) < 5:
+        await update.message.reply_text(
+            "⚠️ نشانی بسیار کوتاه است!\nلطفاً نشانی کامل پستی (شهر، خیابان، پلاک) را وارد کنید:"
+        )
+        return REG_ADDRESS
+
     context.user_data["reg_address"] = text
     await update.message.reply_text(
-        "کدپستی ۱۰ رقمی خود را وارد فرمایید:",
+        "📮 کدپستی ۱۰ رقمی خود را وارد فرمایید:",
         reply_markup=get_cancel_keyboard()
     )
     return REG_POSTAL
 
 async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+    text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+    text = re.sub(r"[\s\-]", "", text)
     user_id = update.effective_user.id
-    postal_code = text
+    is_admin = (user_id == ADMIN_ID)
+
+    if not POSTAL_REGEX.match(text):
+        await update.message.reply_text(
+            "⚠️ کدپستی معتبر نیست!\nکدپستی باید دقیقاً ۱۰ رقم باشد. دوباره وارد کنید:"
+        )
+        return REG_POSTAL
+
     name = context.user_data.get("reg_name", "")
     phone = context.user_data.get("reg_phone", "")
     addr = context.user_data.get("reg_address", "")
-    is_admin = (user_id == ADMIN_ID)
 
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # چک می‌کنیم کاربر از قبل وجود دارد یا خیر
+
         if IS_POSTGRES:
             cur.execute("SELECT user_id FROM users WHERE user_id = %s;", (user_id,))
         else:
@@ -546,27 +581,27 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if existing:
             if IS_POSTGRES:
                 cur.execute("""
-                    UPDATE users 
-                    SET full_name = %s, phone = %s, address = %s, postal_code = %s 
+                    UPDATE users
+                    SET full_name = %s, phone = %s, address = %s, postal_code = %s
                     WHERE user_id = %s;
-                """, (name, phone, addr, postal_code, user_id))
+                """, (name, phone, addr, text, user_id))
             else:
                 cur.execute("""
-                    UPDATE users 
-                    SET full_name = ?, phone = ?, address = ?, postal_code = ? 
+                    UPDATE users
+                    SET full_name = ?, phone = ?, address = ?, postal_code = ?
                     WHERE user_id = ?;
-                """, (name, phone, addr, postal_code, user_id))
+                """, (name, phone, addr, text, user_id))
         else:
             if IS_POSTGRES:
                 cur.execute("""
                     INSERT INTO users (user_id, full_name, phone, address, postal_code)
                     VALUES (%s, %s, %s, %s, %s);
-                """, (user_id, name, phone, addr, postal_code))
+                """, (user_id, name, phone, addr, text))
             else:
                 cur.execute("""
                     INSERT INTO users (user_id, full_name, phone, address, postal_code)
                     VALUES (?, ?, ?, ?, ?);
-                """, (user_id, name, phone, addr, postal_code))
+                """, (user_id, name, phone, addr, text))
 
         conn.commit()
         cur.close()
@@ -589,7 +624,7 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_admin = (user_id == ADMIN_ID)
-    
+
     try:
         conn = get_db_connection()
         cur = conn.cursor()
