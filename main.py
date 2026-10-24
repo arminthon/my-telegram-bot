@@ -1,12 +1,12 @@
 import os
 import io
+import re
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
 import pytz
 import pandas as pd
 
-# لود کردن فایل .env در صورت وجود
 load_dotenv()
 
 from telegram import (
@@ -26,21 +26,19 @@ from telegram.ext import (
     filters,
 )
 
-# تنظیمات لاگینگ
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# بارگذاری متغیرهای محیطی با بررسی نام‌های رایج
 TOKEN = (
     os.getenv("TELEGRAM_BOT_TOKEN")
     or os.getenv("BOT_TOKEN")
     or os.getenv("TELEGRAM_TOKEN")
 )
 if not TOKEN:
-    logger.error("خطای مهم: توکن ربات تلگرام در Environment Variables تعریف نشده است!")
+    logger.error("خطای مهم: توکن ربات تلگرام در متغیرهای محیطی یافت نشد!")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "93543054"))
@@ -50,7 +48,6 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 CARD_NUMBER = "6037-9975-1234-5678"
 CARD_HOLDER = "بانک ملی - به نام آرمین"
 
-# بررسی نوع دیتابیس (Render PostgreSQL یا لوکال SQLite)
 IS_POSTGRES = False
 if DATABASE_URL and DATABASE_URL.startswith("postgres"):
     IS_POSTGRES = True
@@ -72,8 +69,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    # ساخت جدول کاربران
     if IS_POSTGRES:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -85,7 +80,6 @@ def init_db():
                 registered_at TIMESTAMP
             );
         """)
-        # جدول محصولات
         cur.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 sku VARCHAR(100) PRIMARY KEY,
@@ -102,7 +96,6 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        # جدول سفارش‌ها
         cur.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 order_id SERIAL PRIMARY KEY,
@@ -155,7 +148,6 @@ def init_db():
             );
         """)
 
-    # درج محصولات اولیه پیش‌فرض در صورت خالی بودن جدول
     cur.execute("SELECT COUNT(*) FROM products;")
     count = cur.fetchone()[0]
     if count == 0:
@@ -179,12 +171,27 @@ def init_db():
     cur.close()
     conn.close()
 
-# مراحل مکالمه
+# استیت‌های مکالمه
 REG_NAME, REG_PHONE, REG_ADDRESS, REG_POSTAL = range(4)
 ORDER_RECEIPT = 4
 IMPORT_WAIT_FILE = 5
 
 ITEMS_PER_PAGE = 4
+
+# لیست دکمه‌های منو
+RAW_MENU_BUTTONS = [
+    "🛍 محصولات و سفارش",
+    "👤 پروفایل من",
+    "📋 ثبت / ویرایش اطلاعات",
+    "📞 پشتیبانی",
+    "📊 خروجی سفارشات (اکسل)",
+    "📦 درون‌ریزی محصولات (اکسل)",
+    "❌ انصراف"
+]
+
+# ساخت پترن رجکس امن
+MENU_REGEX_PATTERN = "^(" + "|".join(re.escape(btn) for btn in RAW_MENU_BUTTONS) + ")$"
+MENU_BUTTON_FILTER = filters.Regex(MENU_REGEX_PATTERN)
 
 def get_main_keyboard(is_admin=False):
     kb = [
@@ -195,17 +202,19 @@ def get_main_keyboard(is_admin=False):
         kb.append([KeyboardButton("📊 خروجی سفارشات (اکسل)"), KeyboardButton("📦 درون‌ریزی محصولات (اکسل)")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
-# فرمان /start
+def get_cancel_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("❌ انصراف")]], resize_keyboard=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     user_id = update.effective_user.id
     is_admin = (user_id == ADMIN_ID)
     msg = (
-        "🌸 به فروشگاه عطر آرمین خوش آمدید 🌸\n\n"
-        "برای مشاهده لیست عطرها و ثبت سفارش، از دکمه‌های زیر استفاده کنید."
+        "🌸 **به فروشگاه عطر آرمین خوش آمدید** 🌸\n\n"
+        "برای مشاهده عطرها و ثبت سفارش از گزینه‌های زیر استفاده نمایید."
     )
-    await update.message.reply_text(msg, reply_markup=get_main_keyboard(is_admin))
+    await update.message.reply_text(msg, reply_markup=get_main_keyboard(is_admin), parse_mode="Markdown")
 
-# کاتالوگ پویا محصولات با دکمه‌های صفحه‌بندی
 async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -215,7 +224,7 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page=
     conn.close()
 
     if not rows:
-        text = "در حال حاضر هیچ محصول فعالی در انبار ثبت نشده است."
+        text = "در حال حاضر هیچ محصول فعالی در فروشگاه ثبت نشده است."
         if update.callback_query:
             await update.callback_query.answer()
             await update.callback_query.edit_message_text(text)
@@ -262,10 +271,10 @@ async def show_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page=
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# انتخاب محصول برای خرید
 async def handle_buy_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     user_id = query.from_user.id
     sku = query.data.replace("buy_", "")
 
@@ -286,7 +295,7 @@ async def handle_buy_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not prod:
-        await query.message.reply_text("متأسفانه این محصول یافت نشد.")
+        await query.message.reply_text("متأسفانه این عطر در انبار یافت نشد.")
         return ConversationHandler.END
 
     prod_name = prod[0] if IS_POSTGRES else prod["product_name"]
@@ -297,10 +306,11 @@ async def handle_buy_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"متأسفانه موجودی «{prod_name}» به اتمام رسیده است.")
         return ConversationHandler.END
 
-    if not user:
+    if not user or not user[0]:
         await query.message.reply_text(
-            "⚠️ قبل از ثبت سفارش باید اطلاعات تماس و آدرس پستی خود را تکمیل کنید.\n"
-            "لطفاً دکمه «📋 ثبت / ویرایش اطلاعات» را لمس کنید یا /register بزنید."
+            "⚠️ لطفاً ابتدا مشخصات تماس و آدرس پستی خود را در سیستم ثبت نمایید.\n"
+            "برای این کار دکمه «📋 ثبت / ویرایش اطلاعات» را انتخاب کنید.",
+            reply_markup=get_main_keyboard(user_id == ADMIN_ID)
         )
         return ConversationHandler.END
 
@@ -311,24 +321,30 @@ async def handle_buy_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     msg = (
-        f"سفارش شما: **{prod_name}**\n"
+        f"سفارش انتخابی شما: **{prod_name}**\n"
         f"مبلغ قابل پرداخت: **{prod_price:,.0f} تومان**\n\n"
         f"💳 شماره کارت جهت واریز:\n`{CARD_NUMBER}`\n"
         f"{CARD_HOLDER}\n\n"
-        "لطفاً پس از واریز، **عکس فیش واریزی** خود را بفرستید.\n"
-        "(جهت انصراف /cancel بزنید)"
+        "لطفاً پس از واریز، **تصویر رسید یا فیش بانکی** خود را ارسال فرمایید.\n"
+        "برای لغو می‌توانید دکمه «❌ انصراف» را بزنید."
     )
-    await query.message.reply_text(msg, parse_mode="Markdown")
+    await query.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_cancel_keyboard())
     return ORDER_RECEIPT
 
-# دریافت تصویر فیش واریز
 async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     order_data = context.user_data.get("current_order")
 
     if not order_data:
-        await update.message.reply_text("خطا در بازیابی سفارش. لطفاً مجدداً از لیست محصولات اقدام کنید.")
+        await update.message.reply_text(
+            "خطا در مشخصات سفارش. لطفاً دوباره از بخش محصولات اقدام فرمایید.",
+            reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+        )
         return ConversationHandler.END
+
+    if not update.message.photo:
+        await update.message.reply_text("لطفاً عکس فیش را ارسال کنید یا دکمه «❌ انصراف» را بزنید.")
+        return ORDER_RECEIPT
 
     photo = update.message.photo[-1]
     file_id = photo.file_id
@@ -365,18 +381,19 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u_post = u[3] if IS_POSTGRES else u["postal_code"]
 
     await update.message.reply_text(
-        f"✅ سفارش شماره #{order_id} ثبت شد و فیش ارسال گردید.\n"
-        "پس از بررسی ادمین، سفارش بسته‌بندی و ارسال خواهد شد."
+        f"✅ سفارش شماره #{order_id} با موفقیت ثبت شد!\n"
+        "رسید شما جهت بررسی و تأیید برای مدیریت ارسال گردید.",
+        reply_markup=get_main_keyboard(user_id == ADMIN_ID)
     )
 
     admin_caption = (
         f"🚨 **سفارش جدید دریافت شد!** (#{order_id})\n\n"
         f"🛍 محصول: {order_data['name']}\n"
         f"💰 مبلغ: {order_data['price']:,.0f} تومان\n"
-        f"👤 مشتری: {u_name} (آیدی: {user_id})\n"
-        f"📞 تماس: {u_phone}\n"
-        f"📮 کدپستی: {u_post}\n"
-        f"📍 آدرس: {u_addr}"
+        f"👤 مشتری: {u_name} (شناسه: `{user_id}`)\n"
+        f"📞 شماره تماس: `{u_phone}`\n"
+        f"📮 کدپستی: `{u_post}`\n"
+        f"📍 نشانی: {u_addr}"
     )
     admin_kb = InlineKeyboardMarkup([
         [
@@ -395,7 +412,6 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("current_order", None)
     return ConversationHandler.END
 
-# تایید یا رد سفارش توسط ادمین و کسر موجودی انبار
 async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -429,11 +445,11 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
                 cur.execute("UPDATE products SET stock_qty = MAX(stock_qty - 1, 0) WHERE sku = ?;", (target_sku,))
             conn.commit()
 
-            await query.edit_message_caption(caption=f"{query.message.caption}\n\n✅ وضعیت: **تایید شد و موجودی انبار کسر گردید**")
+            await query.edit_message_caption(caption=f"{query.message.caption}\n\n✅ وضعیت: **تایید شد و از انبار کسر گردید**")
             try:
                 await context.bot.send_message(
                     chat_id=target_user,
-                    text=f"🎉 سفارش #{order_id} ({target_name}) تأیید شد و آماده ارسال است."
+                    text=f"🎉 خریدار گرامی، سفارش #{order_id} ({target_name}) تایید و آماده ارسال شد."
                 )
             except Exception as e:
                 logger.error(f"Error notifying user: {e}")
@@ -449,32 +465,54 @@ async def handle_order_decision(update: Update, context: ContextTypes.DEFAULT_TY
     cur.close()
     conn.close()
 
-# فرآیند ثبت‌نام کاربر
+# فرآیند ثبت‌نام
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("لطفاً **نام و نام‌خانوادگی** خود را وارد کنید:\n(برای لغو /cancel بزنید)")
+    await update.message.reply_text(
+        "لطفاً **نام و نام‌خانوادگی** خود را وارد فرمایید:\n"
+        "(برای انصراف دکمه «❌ انصراف» را بزنید)",
+        reply_markup=get_cancel_keyboard(),
+        parse_mode="Markdown"
+    )
     return REG_NAME
 
 async def reg_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["reg_name"] = update.message.text.strip()
-    await update.message.reply_text("شماره همراه خود را بنویسید (مثال: 09121234567):")
+    text = update.message.text.strip()
+    if len(text) < 3:
+        await update.message.reply_text("لطفاً نام و نام خانوادگی را به شکل کامل وارد کنید:")
+        return REG_NAME
+
+    context.user_data["reg_name"] = text
+    await update.message.reply_text(
+        "شماره همراه خود را وارد کنید (مثال: 09121234567):",
+        reply_markup=get_cancel_keyboard()
+    )
     return REG_PHONE
 
 async def reg_get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["reg_phone"] = update.message.text.strip()
-    await update.message.reply_text("آدرس دقیق پستی جهت تحویل سفارش را بنویسید:")
+    text = update.message.text.strip()
+    context.user_data["reg_phone"] = text
+    await update.message.reply_text(
+        "نشانی دقیق پستی جهت تحویل سفارش را بنویسید:",
+        reply_markup=get_cancel_keyboard()
+    )
     return REG_ADDRESS
 
 async def reg_get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["reg_address"] = update.message.text.strip()
-    await update.message.reply_text("کدپستی ۱۰ رقمی خود را وارد کنید:")
+    text = update.message.text.strip()
+    context.user_data["reg_address"] = text
+    await update.message.reply_text(
+        "کدپستی ۱۰ رقمی خود را وارد فرمایید:",
+        reply_markup=get_cancel_keyboard()
+    )
     return REG_POSTAL
 
 async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
     user_id = update.effective_user.id
-    postal_code = update.message.text.strip()
-    name = context.user_data["reg_name"]
-    phone = context.user_data["reg_phone"]
-    addr = context.user_data["reg_address"]
+    postal_code = text
+    name = context.user_data.get("reg_name")
+    phone = context.user_data.get("reg_phone")
+    addr = context.user_data.get("reg_address")
     now = datetime.now(pytz.timezone("Asia/Tehran"))
 
     conn = get_db_connection()
@@ -499,12 +537,11 @@ async def reg_get_postal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     await update.message.reply_text(
-        "🎉 مشخصات شما با موفقیت ثبت شد!\nهم اکنون می‌توانید از منوی محصولات سفارش خود را ثبت کنید.",
+        "🎉 مشخصات شما با موفقیت ثبت گردید!\nهم‌اکنون می‌توانید عطر مورد نظر را سفارش دهید.",
         reply_markup=get_main_keyboard(user_id == ADMIN_ID)
     )
     return ConversationHandler.END
 
-# نمایش پروفایل
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = get_db_connection()
@@ -517,8 +554,11 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.close()
     conn.close()
 
-    if not u:
-        await update.message.reply_text("اطلاعات شما ثبت نشده است. دکمه «📋 ثبت / ویرایش اطلاعات» را بزنید.")
+    if not u or not u[0]:
+        await update.message.reply_text(
+            "هنوز مشخصاتی برای شما ثبت نشده است.\nلطفاً دکمه «📋 ثبت / ویرایش اطلاعات» را بزنید.",
+            reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+        )
         return
 
     name = u[0] if IS_POSTGRES else u["full_name"]
@@ -527,22 +567,22 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     post = u[3] if IS_POSTGRES else u["postal_code"]
 
     msg = (
-        f"👤 **مشخصات ثبت‌شده شما:**\n\n"
+        f"👤 **پروفایل کاربری شما:**\n\n"
         f"🏷 نام: {name}\n"
         f"📞 تماس: {phone}\n"
         f"📮 کدپستی: {post}\n"
-        f"📍 آدرس: {addr}\n\n"
-        "جهت تغییر مشخصات دکمه «📋 ثبت / ویرایش اطلاعات» را لمس کنید."
+        f"📍 نشانی: {addr}\n\n"
+        "جهت تغییر مشخصات دکمه «📋 ثبت / ویرایش اطلاعات» را بزنید."
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id == ADMIN_ID))
 
-# درون‌ریزی اکسل محصولات (Import)
 async def start_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return ConversationHandler.END
     await update.message.reply_text(
-        "📥 لطفاً فایل **products.xlsx** را ارسال فرمایید (به صورت Document).\n"
-        "برای انصراف /cancel بزنید."
+        "📥 لطفاً فایل اکسل محصولات (**products.xlsx**) را ارسال فرمایید:\n"
+        "(برای لغو روی «❌ انصراف» کلیک کنید)",
+        reply_markup=get_cancel_keyboard()
     )
     return IMPORT_WAIT_FILE
 
@@ -551,8 +591,8 @@ async def receive_products_file(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     document = update.message.document
-    if not (document.file_name.endswith(".xlsx") or document.file_name.endswith(".xls")):
-        await update.message.reply_text("⚠️ لطفاً حتماً یک فایل اکسل با پسوند .xlsx بفرستید.")
+    if not document or not (document.file_name.endswith(".xlsx") or document.file_name.endswith(".xls")):
+        await update.message.reply_text("⚠️ لطفاً فایل معتبر اکسل (.xlsx) ارسال فرمایید.")
         return IMPORT_WAIT_FILE
 
     tg_file = await document.get_file()
@@ -561,17 +601,16 @@ async def receive_products_file(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0)
     except Exception as e:
-        await update.message.reply_text(f"❌ خطا در خواندن فایل اکسل:\n{e}")
+        await update.message.reply_text(f"❌ خطا در پردازش فایل اکسل:\n{e}", reply_markup=get_main_keyboard(True))
         return ConversationHandler.END
 
     required_cols = {"sku", "product_name", "price_toman", "volume_ml"}
     if not required_cols.issubset(set(df.columns)):
-        await update.message.reply_text(f"❌ فایل اکسل باید حداقل شامل ستون‌های زیر باشد:\n{', '.join(required_cols)}")
+        await update.message.reply_text(f"❌ ستون‌های اجباری وجود ندارند:\n{', '.join(required_cols)}", reply_markup=get_main_keyboard(True))
         return ConversationHandler.END
 
     inserted = 0
     errors = 0
-
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -635,13 +674,13 @@ async def receive_products_file(update: Update, context: ContextTypes.DEFAULT_TY
     conn.close()
 
     await update.message.reply_text(
-        f"✅ عملیات با موفقیت پایان یافت!\n\n"
-        f"📦 تعداد پردازش و به‌روزرسانی: {inserted}\n"
-        f"⚠️ تعداد خطا: {errors}"
+        f"✅ عملیات با موفقیت انجام شد!\n\n"
+        f"📦 محصولات ثبت یا به‌روزرسانی شده: {inserted}\n"
+        f"⚠️ ردیف‌های نامعتبر: {errors}",
+        reply_markup=get_main_keyboard(True)
     )
     return ConversationHandler.END
 
-# خروجی اکسل محصولات (Export)
 async def export_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -659,10 +698,9 @@ async def export_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         document=output,
         filename="products_export.xlsx",
-        caption="📊 آخرین خروجی دیتابیس محصولات فروشگاه عطر آرمین"
+        caption="📊 آخرین خروجی دیتابیس محصولات"
     )
 
-# گزارش سفارشات برای ادمین (/orders)
 async def export_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -670,7 +708,7 @@ async def export_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db_connection()
     query = """
         SELECT o.order_id, o.user_id, u.full_name, u.phone, u.postal_code, u.address,
-               o.product_name, o.price_toman, o.status, o.created_at
+               o.product_sku, o.product_name, o.price_toman, o.status, o.created_at
         FROM orders o
         LEFT JOIN users u ON o.user_id = u.user_id
         ORDER BY o.order_id DESC;
@@ -679,7 +717,7 @@ async def export_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if df.empty:
-        await update.message.reply_text("هنوز هیچ سفارشی ثبت نشده است.")
+        await update.message.reply_text("هنوز هیچ سفارشی در سیستم ثبت نشده است.")
         return
 
     output = io.BytesIO()
@@ -690,29 +728,29 @@ async def export_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         document=output,
         filename="orders_report.xlsx",
-        caption="📋 گزارش کامل سفارشات ثبت‌شده"
+        caption="📋 گزارش سفارشات مشتریان"
     )
 
-# لغو عملیات
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("عملیات لغو شد.", reply_markup=get_main_keyboard(update.effective_user.id == ADMIN_ID))
+    is_admin = (update.effective_user.id == ADMIN_ID)
+    await update.message.reply_text("عملیات لغو گردید و به منوی اصلی بازگشتید.", reply_markup=get_main_keyboard(is_admin))
     return ConversationHandler.END
 
-# ناوبری صفحات کاتالوگ
 async def catalog_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     page = int(query.data.split("_")[1])
     await show_catalog(update, context, page=page)
 
-# تابع اصلی
 def main():
     if not TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN یافت نشد! لطفاً در بخش Environment در Render آن را اضافه کنید.")
+        raise ValueError("TELEGRAM_BOT_TOKEN تعریف نشده است!")
 
     init_db()
 
     app = ApplicationBuilder().token(TOKEN).build()
+
+    valid_text_filter = filters.TEXT & ~filters.COMMAND & ~MENU_BUTTON_FILTER
 
     reg_handler = ConversationHandler(
         entry_points=[
@@ -720,20 +758,28 @@ def main():
             MessageHandler(filters.Regex(r"^📋 ثبت / ویرایش اطلاعات$"), start_registration)
         ],
         states={
-            REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_get_name)],
-            REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_get_phone)],
-            REG_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_get_address)],
-            REG_POSTAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_get_postal)],
+            REG_NAME: [MessageHandler(valid_text_filter, reg_get_name)],
+            REG_PHONE: [MessageHandler(valid_text_filter, reg_get_phone)],
+            REG_ADDRESS: [MessageHandler(valid_text_filter, reg_get_address)],
+            REG_POSTAL: [MessageHandler(valid_text_filter, reg_get_postal)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(MENU_BUTTON_FILTER, cancel)
+        ],
     )
 
     order_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_buy_click, pattern="^buy_")],
+        entry_points=[CallbackQueryHandler(handle_buy_click, pattern=r"^buy_")],
         states={
-            ORDER_RECEIPT: [MessageHandler(filters.PHOTO, receive_receipt)]
+            ORDER_RECEIPT: [
+                MessageHandler(filters.PHOTO, receive_receipt),
+            ]
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(MENU_BUTTON_FILTER, cancel)
+        ],
     )
 
     import_handler = ConversationHandler(
@@ -742,9 +788,14 @@ def main():
             MessageHandler(filters.Regex(r"^📦 درون‌ریزی محصولات \(اکسل\)$"), start_import)
         ],
         states={
-            IMPORT_WAIT_FILE: [MessageHandler(filters.Document.ALL, receive_products_file)]
+            IMPORT_WAIT_FILE: [
+                MessageHandler(filters.Document.ALL, receive_products_file),
+            ]
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            MessageHandler(MENU_BUTTON_FILTER, cancel)
+        ],
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -756,15 +807,16 @@ def main():
     app.add_handler(order_handler)
     app.add_handler(import_handler)
 
-    app.add_handler(CallbackQueryHandler(catalog_page_callback, pattern="^catpage_"))
-    app.add_handler(CallbackQueryHandler(handle_order_decision, pattern="^(appr|rejc)_"))
+    app.add_handler(CallbackQueryHandler(catalog_page_callback, pattern=r"^catpage_"))
+    app.add_handler(CallbackQueryHandler(handle_order_decision, pattern=r"^(appr|rejc)_"))
 
     app.add_handler(MessageHandler(filters.Regex(r"^🛍 محصولات و سفارش$"), lambda u, c: show_catalog(u, c, 0)))
     app.add_handler(MessageHandler(filters.Regex(r"^👤 پروفایل من$"), show_profile))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 خروجی سفارشات \(اکسل\)$"), export_orders))
+    app.add_handler(MessageHandler(filters.Regex(r"^📦 درون‌ریزی محصولات \(اکسل\)$"), start_import))
     app.add_handler(MessageHandler(filters.Regex(r"^📞 پشتیبانی$"), lambda u, c: u.message.reply_text("جهت پشتیبانی با مدیریت در ارتباط باشید: @ArminSupport")))
+    app.add_handler(MessageHandler(filters.Regex(r"^❌ انصراف$"), cancel))
 
-    # راه‌اندازی Webhook روی Render یا Polling محلی
     if WEBHOOK_URL:
         logger.info(f"Starting Webhook on port {PORT} with URL {WEBHOOK_URL}...")
         app.run_webhook(
